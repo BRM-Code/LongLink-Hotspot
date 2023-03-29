@@ -1,55 +1,15 @@
-from iroha import Iroha, IrohaCrypto, IrohaGrpc
-from datetime import datetime
-import json
+import time
 
-PRIVATE_KEY = ""
-DOMAIN = ""
-SUPER_USER = "" # user with the privilege to add accounts to the chain
+from TelemetryFaker import generate_telemetry, get_drone_id
+from IrohaSetup import create_account_drone, push_to_iroha
 
+drone_id = get_drone_id()
+drone_account = create_account_drone(drone_id)
 
-def initialize():
-    iroha = Iroha(f'{SUSER}@{DOMAIN}')
-    net = IrohaGrpc()
+tele = None
 
-
-def create_account(drone_id, iroha, net):
-    drone_account = f"{drone_id}@{DOMAIN}"
-    tx = iroha.transaction([
-        iroha.command('CreateAccount', account_name=drone_id, domain_id=DOMAIN, public_key='')
-    ])
-    IrohaCrypto.sign_transaction(tx, PRIVATE_KEY)
-    net.send_tx(tx)
-    return drone_account
-
-
-def push_to_iroha(latitude, longitude, ground_speed, altitude, satellites, sat_fix, pitch, roll, heading, vbatt,
-                  consumption, rssi, arm, iroha, net, drone_account):
-    now = datetime.now()
-    telemetry_data = {
-        'GPS Frame': {
-            'Latitude': latitude,
-            'Longitude': longitude,
-            'GroundSpeed': ground_speed,
-            'Altitude': altitude,
-            'Satellites': satellites,
-            'SatFix': sat_fix
-        },
-        'Attitude Frame': {
-            'Pitch': pitch,
-            'Roll': roll,
-            'Heading': heading
-        },
-        'Status Frame': {
-            'Vbatt': vbatt,
-            'Consumption': consumption,
-            'RSSI': rssi,
-            'arm': arm
-        },
-        'timestamp': now.strftime('%Y-%m-%d %H:%M:%S')
-    }
-    telemetry_json = json.dumps(telemetry_data)
-    tx = iroha.transaction([
-        iroha.command('SetAccountDetail', account_id=drone_account, key='telemetry', value=telemetry_json)
-    ])
-    IrohaCrypto.sign_transaction(tx, PRIVATE_KEY)
-    net.send_tx(tx)
+while True:
+    for i in range(10):
+        tele = generate_telemetry(tele)  # Will be replaced with actual telemetry from a UAV
+        push_to_iroha(tele, drone_id)
+        time.sleep(5)

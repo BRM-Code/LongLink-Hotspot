@@ -81,3 +81,7 @@ def randomize_location(latitude, longitude):
         randomize_value(latitude, delta),
         randomize_value(longitude, delta)
     )
+
+
+def get_drone_id():
+    return "TestUAV1"
