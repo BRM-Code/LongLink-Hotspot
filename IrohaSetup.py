@@ -5,14 +5,13 @@ from grpc._channel import _InactiveRpcError
 
 from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
-import json
 from datetime import datetime
 from iroha import Iroha, IrohaCrypto, IrohaGrpc
 
 IROHA_HOST_ADDR = '127.0.0.1'
-IROHA_PORT = os.getenv('IROHA_PORT', '50051')
-ADMIN_ACCOUNT_ID = os.getenv('ADMIN_ACCOUNT_ID', 'admin@test')
-ADMIN_PRIVATE_KEY = os.getenv('ADMIN_PRIVATE_KEY', 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70')
+IROHA_PORT = '50051'
+ADMIN_ACCOUNT_ID = 'admin@test'
+ADMIN_PRIVATE_KEY = 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70'
 IROHA_DOMAIN = "test"
 
 
@@ -53,15 +52,18 @@ def get_commands_from_tx(transaction):
 # This function generates a private/public key pair using the IrohaCrypto module.
 # If the key files already exist, it reads the values from them.
 def key_setup(account_id):
+    print(f"[{account_id}] Looking for keys ->", end="")
     private_key_file = f'{account_id}-keypair.priv'
     public_key_file = f'{account_id}-keypair.pub'
 
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
+        print("Found keys")
         with open(private_key_file, 'rb') as f:
             private_key = f.read()
         with open(public_key_file, 'rb') as f:
             public_key = f.read()
     else:
+        print("Generating new keys")
         private_key = IrohaCrypto.private_key()
         public_key = IrohaCrypto.derive_public_key(private_key)
         with open(private_key_file, 'wb') as f:
@@ -71,35 +73,47 @@ def key_setup(account_id):
     return private_key, public_key
 
 
-def create_account_drone(drone_id):
-    priv, pub = key_setup(drone_id)
+def create_account(device_id):
+    print(f"[{device_id}] Checking account...")
+    query = iroha.query('GetAccountDetail', account_id=f"{device_id}")
+    IrohaCrypto.sign_query(query, ADMIN_PRIVATE_KEY)
+    response = net.send_query(query)
+    data = response.account_detail_response
+    print(f'Account id = {device_id}, details = {data.detail}')
+    if data.detail:
+        print(f"Account with ID {device_id} already exists in Iroha.")
+        return
+    else:
+        print(f"[{device_id}] No account found in Iroha, Creating account for device")
+        priv, pub = key_setup(device_id)
+        tx = iroha.transaction([
+            iroha.command('CreateAccount', account_name=device_id, domain_id=IROHA_DOMAIN,
+                          public_key=pub)
+        ])
+        IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
+        send_transaction_and_print_status(tx)
+        return
+
+
+def create_telemetry_asset():
+    print("Creating telemetry asset")
     tx = iroha.transaction([
-        iroha.command('CreateAccount', account_name=drone_id, domain_id=IROHA_DOMAIN, public_key=pub)
+        iroha.command('CreateAsset', asset_name='telemetry_data', domain_id=IROHA_DOMAIN, precision=2)
     ])
     IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
     send_transaction_and_print_status(tx)
-    return
 
 
-def create_account_gateway(gateway_id):
-    priv, pub = key_setup(gateway_id)
-    tx = iroha.transaction([
-        iroha.command('CreateAccount', account_name=gateway_id, domain_id=IROHA_DOMAIN, public_key=pub)
-    ])
-    IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
-    send_transaction_and_print_status(tx)
-    return
+def store_telemetry_data(telemetry, drone_id):
+    telemetry['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    commands = []
 
-
-def push_to_iroha(telemetry, drone_id):
-    now = datetime.now()
-    telemetry['timestamp'] = now.strftime('%Y-%m-%d %H:%M:%S')
-
-    tx = iroha.transaction([
-        iroha.command('SetAccountDetail', account_id=drone_id, key='telemetry', value=json.dumps(telemetry))
-    ])
+    for key, value in telemetry.items():
+        commands.append(iroha.command('SetAccountDetail', account_id=f"{drone_id}@{IROHA_DOMAIN}", key=key, value=str(value)))
+    tx = iroha.transaction(commands)
     IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
     send_transaction_and_print_status(tx)
 
 
 iroha, net = initialize()
+#create_telemetry_asset()
