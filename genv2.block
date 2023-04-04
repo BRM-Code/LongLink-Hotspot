@@ -1,0 +1,150 @@
+{
+  "block_v1": {
+    "payload": {
+      "transactions": [
+        {
+          "payload": {
+            "reducedPayload": {
+              "commands": [
+                {
+                  "addPeer": {
+                    "peer": {
+                      "address": "127.0.0.1:10001",
+                      "peerKey": "bddd58404d1315e0eb27902c5d7c8eb0602c16238f005773df406bc191308929"
+                    }
+                  }
+                },
+                {
+                  "createRole": {
+                    "roleName": "admin",
+                    "permissions":[
+                        "can_add_peer",
+                        "can_add_signatory",
+                        "can_create_account",
+                        "can_create_domain",
+                        "can_get_all_acc_ast",
+                        "can_get_all_acc_ast_txs",
+                        "can_get_all_acc_detail",
+                        "can_get_all_acc_txs",
+                        "can_get_all_accounts",
+                        "can_get_all_signatories",
+                        "can_get_all_txs",
+                        "can_get_blocks",
+                        "can_get_roles",
+                        "can_read_assets",
+                        "can_remove_signatory",
+                        "can_set_quorum"
+                     ]
+                  }
+                },
+                {
+                  "createRole":{
+                     "roleName":"user",
+                     "permissions":[
+                        "can_add_signatory",
+                        "can_get_my_acc_ast",
+                        "can_get_my_acc_ast_txs",
+                        "can_get_my_acc_detail",
+                        "can_get_my_acc_txs",
+                        "can_get_my_account",
+                        "can_get_my_signatories",
+                        "can_get_my_txs",
+                        "can_grant_can_add_my_signatory",
+                        "can_grant_can_remove_my_signatory",
+                        "can_grant_can_set_my_account_detail",
+                        "can_grant_can_set_my_quorum",
+                        "can_grant_can_transfer_my_assets",
+                        "can_receive",
+                        "can_remove_signatory",
+                        "can_set_quorum",
+                        "can_transfer"
+                     ]
+                  }
+               },
+                {
+                  "createRole": {
+                    "roleName": "uav",
+                    "permissions": [
+                      "can_set_detail",
+                      "can_grant_can_set_my_account_detail"
+                    ]
+                  }
+                },
+                {
+                  "createRole": {
+                    "roleName": "gateway",
+                    "permissions": [
+                      "can_get_my_acc_ast",
+                      "can_set_detail"
+                    ]
+                  }
+                },
+                {
+                  "createDomain": {
+                    "domainId":"test",
+                    "defaultRole":"user"
+                  }
+                },
+                {
+                  "createAccount": {
+                    "accountName": "admin",
+                    "domainId": "test",
+                    "publicKey": "6118843446062946e3dec495a48a808426efa92c78d4ee1094b3503c9437a70c"
+                  }
+                },
+                {
+                  "createAccount": {
+                    "accountName": "u1",
+                    "domainId": "test",
+                    "publicKey": "468d389ac7b6e10fe61aafaf924fae808f2694770468005f9d77926484824b85"
+                  }
+                },
+                {
+                  "createAccount": {
+                    "accountName": "g1",
+                    "domainId": "test",
+                    "publicKey": "90f3c2ab2f42e3ad5931a13d07d85d7175eac39251e2a5e25beb0171b803fa01"
+                  }
+                },
+                {
+                  "appendRole": {
+                    "accountId": "admin@test",
+                    "roleName": "admin"
+                  }
+                },
+                {
+                  "appendRole": {
+                    "accountId": "u1@test",
+                    "roleName": "uav"
+                  }
+                },
+                {
+                  "appendRole": {
+                    "accountId": "u1@test",
+                    "roleName": "user"
+                  }
+                },
+                {
+                  "appendRole": {
+                    "accountId": "g1@test",
+                    "roleName": "gateway"
+                  }
+                },
+                {
+                  "appendRole": {
+                    "accountId": "g1@test",
+                    "roleName": "user"
+                  }
+                }
+              ],
+              "quorum": 1
+            }
+          }
+        }
+      ],
+      "txNumber": 1,
+      "height": "1",
+      "prevBlockHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

@@ -1,22 +1,22 @@
 import binascii
-
 import grpc
-from grpc._channel import _InactiveRpcError
+from iroha.primitive_pb2 import can_set_my_account_detail
 
 from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
 from datetime import datetime
-from iroha import Iroha, IrohaCrypto, IrohaGrpc
+from iroha import Iroha, IrohaGrpc, IrohaCrypto, primitive_pb2
 
-IROHA_HOST_ADDR = '127.0.0.1'
+IROHA_HOST_ADDR = 'localhost'
 IROHA_PORT = '50051'
-ADMIN_ACCOUNT_ID = 'admin@test'
-ADMIN_PRIVATE_KEY = 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70'
 IROHA_DOMAIN = "test"
+ADMIN_ACCOUNT_ID = f'admin@{IROHA_DOMAIN}'
+ADMIN_PRIVATE_KEY = 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70'
+iroha_admin = Iroha(ADMIN_ACCOUNT_ID)
 
 
 def initialize():
-    return Iroha(ADMIN_ACCOUNT_ID), IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
+    return IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
 
 
 def send_transaction_and_print_status(transaction):
@@ -27,12 +27,12 @@ def send_transaction_and_print_status(transaction):
           f' hash = {hex_hash}, creator = {creator_id}')
     try:
         net.send_tx(transaction)
-    except grpc._channel._InactiveRpcError:
+    except grpc.RpcError:
         print("[ERROR] Cannot connect to server")
         return
     for i, status in enumerate(net.tx_status_stream(transaction)):
         status_name, status_code, error_code = status
-        print(f"{i}: status_name={status_name}, status_code={status_code}, "
+        print(f"    {i}: status_name={status_name}, status_code={status_code}, "
               f"error_code={error_code}")
         if status_name in ('STATEFUL_VALIDATION_FAILED', 'STATELESS_VALIDATION_FAILED', 'REJECTED'):
             error_code_hr = get_proper_functions_for_commands(commands)(error_code)
@@ -51,10 +51,10 @@ def get_commands_from_tx(transaction):
 
 # This function generates a private/public key pair using the IrohaCrypto module.
 # If the key files already exist, it reads the values from them.
-def key_setup(account_id):
-    print(f"[{account_id}] Looking for keys ->", end="")
-    private_key_file = f'{account_id}-keypair.priv'
-    public_key_file = f'{account_id}-keypair.pub'
+def get_keys(account_id):
+    print(f"[{account_id}] Looking for keys -> ", end="")
+    private_key_file = f'{account_id}@test1.priv' # TODO: fix this so it uses test
+    public_key_file = f'{account_id}@test1.pub'
 
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
         print("Found keys")
@@ -74,46 +74,68 @@ def key_setup(account_id):
 
 
 def create_account(device_id):
-    print(f"[{device_id}] Checking account...")
-    query = iroha.query('GetAccountDetail', account_id=f"{device_id}")
-    IrohaCrypto.sign_query(query, ADMIN_PRIVATE_KEY)
-    response = net.send_query(query)
-    data = response.account_detail_response
-    print(f'Account id = {device_id}, details = {data.detail}')
-    if data.detail:
-        print(f"Account with ID {device_id} already exists in Iroha.")
-        return
-    else:
-        print(f"[{device_id}] No account found in Iroha, Creating account for device")
-        priv, pub = key_setup(device_id)
-        tx = iroha.transaction([
-            iroha.command('CreateAccount', account_name=device_id, domain_id=IROHA_DOMAIN,
-                          public_key=pub)
-        ])
-        IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
+    print(f"[{device_id}] Checking account -> ", end="")
+    priv, pub = get_keys(device_id)
+    tx = iroha_admin.transaction([
+        iroha_admin.command('CreateAccount', account_name=device_id, domain_id=IROHA_DOMAIN,
+                            public_key=pub)
+    ])
+    IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
+    try:
         send_transaction_and_print_status(tx)
+        print("Created account for device")
+    except RuntimeError:
+        print("Account already exists")
         return
 
 
 def create_telemetry_asset():
     print("Creating telemetry asset")
-    tx = iroha.transaction([
-        iroha.command('CreateAsset', asset_name='telemetry_data', domain_id=IROHA_DOMAIN, precision=2)
+    tx = iroha_admin.transaction([
+        iroha_admin.command('CreateAsset', asset_name='telemetry_data', domain_id=IROHA_DOMAIN, precision=2)
     ])
     IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
     send_transaction_and_print_status(tx)
 
 
-def store_telemetry_data(telemetry, drone_id):
+def store_telemetry_data(telemetry, drone_id, gateway_id):
     telemetry['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    commands = []
+    priv, pub = get_keys(gateway_id)
+    iroha_gateway = Iroha(f"{gateway_id}@{IROHA_DOMAIN}")
 
+    commands = []
     for key, value in telemetry.items():
-        commands.append(iroha.command('SetAccountDetail', account_id=f"{drone_id}@{IROHA_DOMAIN}", key=key, value=str(value)))
-    tx = iroha.transaction(commands)
-    IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
+        commands.append(iroha_gateway.command('SetAccountDetail', account_id=f"{drone_id}@{IROHA_DOMAIN}", key=key,
+                                              value=str(value)))
+    tx = iroha_gateway.transaction(commands)
+    IrohaCrypto.sign_transaction(tx, priv)
     send_transaction_and_print_status(tx)
 
 
-iroha, net = initialize()
-#create_telemetry_asset()
+def create_domain(default_role='user'):
+    print(f"Creating Domain : {IROHA_DOMAIN}")
+    commands = [iroha_admin.command('CreateDomain', domain_id=IROHA_DOMAIN, default_role=default_role), ]
+    tx = IrohaCrypto.sign_transaction(iroha_admin.transaction(commands), ADMIN_PRIVATE_KEY)
+    send_transaction_and_print_status(tx)
+
+
+def uav_allow_gateway(drone_id, gateway_id):
+    priv, pub = get_keys(drone_id)
+    tx = iroha_admin.transaction([
+        iroha_admin.command('GrantPermission', account_id=f'{gateway_id}@{IROHA_DOMAIN}',
+                            permission=primitive_pb2.can_set_my_account_detail)
+    ], creator_account=f"{drone_id}@{IROHA_DOMAIN}")
+    IrohaCrypto.sign_transaction(tx, priv)
+    send_transaction_and_print_status(tx)
+
+
+def get_device_details(device_id):
+    print(f"[{device_id}] Looking for details -> ", end="")
+    query = iroha_admin.query('GetAccountDetail', account_id=f"{device_id}@{IROHA_DOMAIN}")
+    IrohaCrypto.sign_query(query, ADMIN_PRIVATE_KEY)
+    response = net.send_query(query)
+    detail = response.account_detail_response.detail
+    print(detail) if detail else print("No Details!")
+
+
+net = initialize()
