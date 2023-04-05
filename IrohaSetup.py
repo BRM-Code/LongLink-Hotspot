@@ -52,7 +52,7 @@ def get_commands_from_tx(transaction):
 # If the key files already exist, it reads the values from them.
 def get_keys(account_id):
     print(f"[{account_id}] Looking for keys -> ", end="")
-    private_key_file = f'{account_id}@{IROHA_DOMAIN}.priv'  # TODO: fix this so it uses test
+    private_key_file = f'{account_id}@{IROHA_DOMAIN}.priv'
     public_key_file = f'{account_id}@{IROHA_DOMAIN}.pub'
 
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
