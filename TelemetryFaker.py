@@ -7,21 +7,21 @@ def generate_telemetry(last_telemetry=None):
 
     if last_telemetry is not None:
         print("Correlating with previous telemetry")
-        latitude, longitude = randomize_location(last_telemetry['GPS Frame']['Latitude'],
-                                                 last_telemetry['GPS Frame']['Longitude'])
-        ground_speed = randomize_value(last_telemetry['GPS Frame']['GroundSpeed'], 0.5)
-        altitude = randomize_value(last_telemetry['GPS Frame']['Altitude'], 5)
-        satellites = randomize_value(last_telemetry['GPS Frame']['Satellites'], 0.1)
+        latitude, longitude = randomize_location(last_telemetry['Latitude'],
+                                                 last_telemetry['Longitude'])
+        ground_speed = randomize_value(last_telemetry['GroundSpeed'], 0.5)
+        altitude = randomize_value(last_telemetry['Altitude'], 5)
+        satellites = randomize_value(last_telemetry['Satellites'], 0.1)
         sat_fix = random.choice([True, False])
 
-        pitch = randomize_value(last_telemetry['Attitude Frame']['Pitch'], 5)
-        roll = randomize_value(last_telemetry['Attitude Frame']['Roll'], 5)
-        heading = randomize_value(last_telemetry['Attitude Frame']['Heading'], 5)
+        pitch = randomize_value(last_telemetry['Pitch'], 5)
+        roll = randomize_value(last_telemetry['Roll'], 5)
+        heading = randomize_value(last_telemetry['Heading'], 5)
 
-        vbatt = randomize_value(last_telemetry['Status Frame']['Vbatt'], 0.05)
-        consumption = randomize_value(last_telemetry['Status Frame']['Consumption'], 0.1)
-        rssi = randomize_value(last_telemetry['Status Frame']['RSSI'], 0.1)
-        arm = last_telemetry['Status Frame']['arm']
+        vbatt = randomize_value(last_telemetry['Vbatt'], 0.05)
+        consumption = randomize_value(last_telemetry['Consumption'], 0.1)
+        rssi = randomize_value(last_telemetry['RSSI'], 0.1)
+        arm = last_telemetry['arm']
 
         telemetry.update({
             'Latitude': latitude,
@@ -74,3 +74,22 @@ def randomize_location(latitude, longitude):
 
 def get_drone_id():
     return "testuav1"
+
+
+def convert_12bit(dictionary):
+    converted_dict = {}
+
+    for key, value in dictionary.items():
+        if isinstance(value, (int, float)):
+            if 0 <= value <= 4095:
+                converted_dict[key] = int(value)
+            else:
+                value_bin = format(int(value), '012b')
+                for i in range(0, len(value_bin), 12):
+                    partial_value_bin = value_bin[i:i+12]
+                    partial_value = int(partial_value_bin, 2)
+                    sub_key = f"{key}_{i//12}"
+                    converted_dict[sub_key] = partial_value
+        else:
+            converted_dict[key] = value
+    return converted_dict

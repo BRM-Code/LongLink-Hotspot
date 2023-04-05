@@ -1,6 +1,5 @@
 import binascii
 import grpc
-from iroha.primitive_pb2 import can_set_my_account_detail
 
 from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
@@ -53,8 +52,8 @@ def get_commands_from_tx(transaction):
 # If the key files already exist, it reads the values from them.
 def get_keys(account_id):
     print(f"[{account_id}] Looking for keys -> ", end="")
-    private_key_file = f'{account_id}@test1.priv' # TODO: fix this so it uses test
-    public_key_file = f'{account_id}@test1.pub'
+    private_key_file = f'{account_id}@{IROHA_DOMAIN}.priv'  # TODO: fix this so it uses test
+    public_key_file = f'{account_id}@{IROHA_DOMAIN}.pub'
 
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
         print("Found keys")
@@ -89,16 +88,8 @@ def create_account(device_id):
         return
 
 
-def create_telemetry_asset():
-    print("Creating telemetry asset")
-    tx = iroha_admin.transaction([
-        iroha_admin.command('CreateAsset', asset_name='telemetry_data', domain_id=IROHA_DOMAIN, precision=2)
-    ])
-    IrohaCrypto.sign_transaction(tx, ADMIN_PRIVATE_KEY)
-    send_transaction_and_print_status(tx)
-
-
 def store_telemetry_data(telemetry, drone_id, gateway_id):
+    print(f"[{gateway_id}] is storing info from {drone_id}")
     telemetry['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     priv, pub = get_keys(gateway_id)
     iroha_gateway = Iroha(f"{gateway_id}@{IROHA_DOMAIN}")
@@ -120,6 +111,7 @@ def create_domain(default_role='user'):
 
 
 def uav_allow_gateway(drone_id, gateway_id):
+    print(f"[{drone_id}] is allowing details from {gateway_id}")
     priv, pub = get_keys(drone_id)
     tx = iroha_admin.transaction([
         iroha_admin.command('GrantPermission', account_id=f'{gateway_id}@{IROHA_DOMAIN}',
