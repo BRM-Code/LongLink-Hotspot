@@ -73,7 +73,7 @@ def randomize_location(latitude, longitude):
 
 
 def get_drone_id():
-    return "testuav1"
+    return "u1"
 
 
 def convert_12bit(dictionary):

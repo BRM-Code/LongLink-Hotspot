@@ -1,7 +1,32 @@
+import json
 import time
-
+import socket
 from IrohaSetup import store_telemetry_data, get_device_details
 from TelemetryFaker import generate_telemetry, convert_12bit
+
+
+def listen_push_data():
+    print("Connecting to the packet forwarder...")
+    hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    hotspot_socket.bind(('localhost', 1700))
+
+    while True:
+        data, address = hotspot_socket.recvfrom(1024)
+        # check if the received packet is a PUSH_DATA packet
+        if data[3] == 0x00:
+            print("Received a packet!")
+
+            json_str = data[12:].decode('utf-8')
+            try:
+                json_obj = json.loads(json_str)
+                print(json_obj)
+            except json.JSONDecodeError:
+                print('Error: Invalid JSON')
+
+            token = data[1:3]
+            push_ack = bytes([2, token[0], token[1], 0x01])
+            hotspot_socket.sendto(push_ack, address)
+
 
 drone_id = "u1"
 gateway_id = "g1"

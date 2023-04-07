@@ -1,4 +1,5 @@
 import binascii
+import time
 import grpc
 
 from utilities.errorCodes2Hr import get_proper_functions_for_commands
@@ -10,27 +11,28 @@ IROHA_HOST_ADDR = 'localhost'
 IROHA_PORT = '50051'
 IROHA_DOMAIN = "test"
 ADMIN_ACCOUNT_ID = f'admin@{IROHA_DOMAIN}'
-ADMIN_PRIVATE_KEY = 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70'
 iroha_admin = Iroha(ADMIN_ACCOUNT_ID)
-
-
-def initialize():
-    return IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
 
 
 def send_transaction_and_print_status(transaction):
     hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
     creator_id = transaction.payload.reduced_payload.creator_account_id
     commands = get_commands_from_tx(transaction)
-    print(f'Transaction "{commands}",'
-          f' hash = {hex_hash}, creator = {creator_id}')
+    print(f'[{creator_id}] Transaction "{commands}", hash = {hex_hash}')
     try:
         net.send_tx(transaction)
+        time_start = time.perf_counter()
     except grpc.RpcError:
         print("[ERROR] Cannot connect to server")
         return
     for i, status in enumerate(net.tx_status_stream(transaction)):
         status_name, status_code, error_code = status
+        if status_name == "STATELESS_VALIDATION_SUCCESS":
+            print(f"[{creator_id}] Transaction validated at {time.perf_counter() - time_start}")
+        if status_name == "COMMITTED":
+            time_end = time.perf_counter() - time_start
+            print(f"[{creator_id}] Transaction took: {time_end}")
+            return
         print(f"    {i}: status_name={status_name}, status_code={status_code}, "
               f"error_code={error_code}")
         if status_name in ('STATEFUL_VALIDATION_FAILED', 'STATELESS_VALIDATION_FAILED', 'REJECTED'):
@@ -101,6 +103,7 @@ def store_telemetry_data(telemetry, drone_id, gateway_id):
     tx = iroha_gateway.transaction(commands)
     IrohaCrypto.sign_transaction(tx, priv)
     send_transaction_and_print_status(tx)
+    return
 
 
 def create_domain(default_role='user'):
@@ -130,4 +133,5 @@ def get_device_details(device_id):
     print(detail) if detail else print("No Details!")
 
 
-net = initialize()
+net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
+ADMIN_PRIVATE_KEY, ADMIN_PUB_KEY = get_keys("admin")
