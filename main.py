@@ -31,9 +31,12 @@ def listen_push_data():
                     print("transmission packet!")
                     data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
                     print(f"Data extracted: {data_decoded}") if DEBUG else None
-                    uav_id, tele = process_telemetry(data_decoded)
-                    store_telemetry_data(tele, uav_id, gateway_id)
-                    get_device_details(uav_id, gateway_id) if DEBUG else None
+                    try:
+                        uav_id, tele = process_telemetry(data_decoded)
+                        store_telemetry_data(tele, uav_id, gateway_id)
+                        get_device_details(uav_id, gateway_id) if DEBUG else None
+                    except RuntimeWarning:
+                        continue
                 else:
                     print("Error: Unknown packet type!")
             except json.JSONDecodeError:
@@ -43,22 +46,25 @@ def listen_push_data():
 def process_telemetry(decoded_data):
     data_list = str(decoded_data[1:len(decoded_data)]).split(',')
     print(f"Data Decoded = {data_list}") if DEBUG else None
-    uav_id = data_list[12][0:2]
-    telemetry = {
-        'Latitude': data_list[0][2:len(data_list[0])],
-        'Longitude': data_list[1],
-        'GroundSpeed': data_list[4],
-        'Altitude': data_list[3],
-        'Satellites': data_list[5],
-        'SatFix': bool(data_list[11][0]),
-        'Pitch': data_list[8],
-        'Roll': data_list[9],
-        'Heading': data_list[10],
-        'Vbatt': data_list[2],
-        'Consumption': data_list[6],
-        'RSSI': data_list[7],
-        'arm': bool(data_list[11][1])
-    }
+    try:
+        uav_id = data_list[12][0:2]
+        telemetry = {
+            'Latitude': data_list[0][2:len(data_list[0])],
+            'Longitude': data_list[1],
+            'GroundSpeed': data_list[4],
+            'Altitude': data_list[3],
+            'Satellites': data_list[5],
+            'SatFix': bool(data_list[11][0]),
+            'Pitch': data_list[8],
+            'Roll': data_list[9],
+            'Heading': data_list[10],
+            'Vbatt': data_list[2],
+            'Consumption': data_list[6],
+            'RSSI': data_list[7],
+            'arm': bool(data_list[11][1])
+        }
+    except IndexError:
+        raise RuntimeWarning(f"[ERROR] Data failed to be cast to a JSON!\nData Decoded = {data_list}")
     print(f"[{uav_id}] Telemetry: {telemetry}") if DEBUG else None
     return uav_id, telemetry
 
