@@ -2,45 +2,101 @@ import base64
 import json
 import socket
 import sys
-from IrohaSetup import store_telemetry_data, get_device_details, DEBUG
+import asyncio
+
+print("     __                      __    _       __         __  __      __                   __ \n"
+      "    / /   ____  ____  ____ _/ /   (_)___  / /__      / / / /___  / /__________  ____  / /_\n"
+      "   / /   / __ \/ __ \/ __ `/ /   / / __ \/ //_/_____/ /_/ / __ \/ __/ ___/ __ \/ __ \/ __/\n"
+      "  / /___/ /_/ / / / / /_/ / /___/ / / / / ,< /_____/ __  / /_/ / /_(__  ) /_/ / /_/ / /_  \n"
+      " /_____/\____/_/ /_/\__, /_____/_/_/ /_/_/|_|     /_/ /_/\____/\__/____/ .___/\____/\__/  \n"
+      "                   /____/                                             /_/             ")
+from IrohaSetup import store_telemetry_data, get_device_details, DEBUG, connect
 
 
-def listen_push_data():
-    print("[System] Connecting to the packet forwarder...", end="")
-    hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    hotspot_socket.bind(('localhost', 1730))
-    print("Connected!")
-
+async def listen_push_data():
+    print("[System] Started Listener")
     while True:
         data, address = hotspot_socket.recvfrom(1024)
-        # check if the received packet is a PUSH_DATA packet
-        if data[3] == 0x00:
+        print("[PK] Received a packet -> ", end="")
+        push_ack = None
+        match data[3]:
+            case 0x00:
+                json_str = data[12:].decode('utf-8')
+                try:
+                    packet = json.loads(json_str)
+                    if 'stat' in packet:
+                        print("stat packet!")
+                    elif 'rxpk' in packet:
+                        print("transmission packet!")
+                        data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
+                        print(f"Data extracted: {data_decoded}") if DEBUG else None
+                        try:
+                            uav_id, tele = process_telemetry(data_decoded)
+                            store_telemetry_data(tele, uav_id, gateway_id)
+                            get_device_details(uav_id, gateway_id) if DEBUG else None
+                            send_downlink_packet(uplink_ack(packet['rxpk'][0], uav_id), address)
+                        except RuntimeWarning:
+                            print("[PK] Packet failed to be processed")
+                    else:
+                        print("[Error] Unknown packet type!")
+                except json.JSONDecodeError:
+                    print('[Error] Invalid JSON received!')
 
-            # Tell the packet-forwarder data arrived
-            token = data[1:3]
-            push_ack = bytes([2, token[0], token[1], 0x01])
+                token = data[1:3]
+                push_ack = bytes([2, token[0], token[1], 0x01])
+
+            case 0x02:
+                print(f"PULL_DATA: Gateway-MAC = {data[4:11]}")
+                token = data[1:3]
+                push_ack = bytes([2, token[0], token[1], 0x04])
+
+            case 0x05:
+                print(f"TX_ACK: Token sent: {data[1:2]}")
+                try:
+                    json_str = data[12:].decode('utf-8')
+                    print(f"[PK] ERROR: {json_str}")
+                except IndexError:
+                    print("[PK] Packet sent OK")
+
+        # Send ACK to packet forwarder
+        if push_ack:
             hotspot_socket.sendto(push_ack, address)
 
-            print("[PK] Received a packet -> ", end="")
-            json_str = data[12:].decode('utf-8')
-            try:
-                packet = json.loads(json_str)
-                if 'stat' in packet:
-                    print("stat packet!")
-                elif 'rxpk' in packet:
-                    print("transmission packet!")
-                    data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
-                    print(f"Data extracted: {data_decoded}") if DEBUG else None
-                    try:
-                        uav_id, tele = process_telemetry(data_decoded)
-                        store_telemetry_data(tele, uav_id, gateway_id)
-                        get_device_details(uav_id, gateway_id) if DEBUG else None
-                    except RuntimeWarning:
-                        continue
-                else:
-                    print("Error: Unknown packet type!")
-            except json.JSONDecodeError:
-                print('Error: Invalid JSON received!')
+
+def send_downlink_packet(txpk, address):
+    json_data = json.dumps({"txpk": txpk})
+
+    # Create a PULL_RESP packet
+    protocol_version = 2
+    token = b"\x12\x34"
+    packet_identifier = 0x03
+    packet = bytes([protocol_version]) + token + bytes([packet_identifier]) + json_data.encode()
+
+    # Send the packet to the packet forwarder
+    print("[System] Sending PULL_RESP packet...", end="")
+    hotspot_socket.sendto(packet, address)
+    print("sent!")
+
+
+def uplink_ack(downlink_packet, uav_id):
+    print(downlink_packet)
+    status = 1  # TODO: Maybe send the UAV back some useful information here
+    ack = f"{uav_id}{gateway_id}{status}"
+    ack_encoded = base64.b64encode(ack.encode('utf-8')).decode('utf-8')
+
+    txpk = {
+        'imme': True,  # Send packet immediately
+        'freq': downlink_packet['freq'],  # TX central frequency in MHz
+        'rfch': downlink_packet['rfch'],  # Concentrator "RF chain" used for TX
+        'powe': 14,  # TX output power in dBm
+        'modu': 'LORA',  # Modulation identifier
+        "datr": 'SF11BW125',  # LoRa data-rate identifier (eg. SF12BW500)
+        'size': sys.getsizeof(ack_encoded),  # RF packet payload size in bytes
+        "codr": "4/6",  # LoRa ECC coding rate identifier
+        "ipol": False,  # Lora modulation polarization inversion
+        'data': ack_encoded  # Base64 encoded RF packet payload
+    }
+    return txpk
 
 
 def process_telemetry(decoded_data):
@@ -69,21 +125,24 @@ def process_telemetry(decoded_data):
     return uav_id, telemetry
 
 
-icon = ("     __                      __    _       __         __  __      __                   __ \n"
-        "    / /   ____  ____  ____ _/ /   (_)___  / /__      / / / /___  / /__________  ____  / /_\n"
-        "   / /   / __ \/ __ \/ __ `/ /   / / __ \/ //_/_____/ /_/ / __ \/ __/ ___/ __ \/ __ \/ __/\n"
-        "  / /___/ /_/ / / / / /_/ / /___/ / / / / ,< /_____/ __  / /_/ / /_(__  ) /_/ / /_/ / /_  \n"
-        " /_____/\____/_/ /_/\__, /_____/_/_/ /_/_/|_|     /_/ /_/\____/\__/____/ .___/\____/\__/  \n"
-        "                   /____/                                             /_/             ")
-print(icon)
+async def task_loop():
+    packet_task = asyncio.create_task(listen_push_data())
+    await packet_task
 
-if len(sys.argv) > 1 and not sys.argv[1]:
-    print(f"[System] Debug: ON")
-    DEBUG = sys.argv[1]
-else:
+
+try:
+    if bool(sys.argv[1]):
+        print(f"[System] Debug: ON")
+        DEBUG = True
+except IndexError:
     print(f"[System] Debug: OFF")
+
 gateway_id = "g1"
 print(f"[System] Gateway ID: {gateway_id}")
+connect()
+print("[System] Connecting to the packet forwarder...", end="")
+hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+hotspot_socket.bind(('localhost', 1730))
+print("Connected!")
 
-while True:
-    listen_push_data()
+asyncio.run(task_loop())
