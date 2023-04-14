@@ -1,17 +1,14 @@
 import binascii
 import time
-import grpc
-
 from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
-from datetime import datetime
 from iroha import Iroha, IrohaGrpc, IrohaCrypto
 
 IROHA_HOST_ADDR = '192.168.0.199'
 IROHA_PORT = '50051'
 IROHA_DOMAIN = "test"
 DEBUG = False
-
+net = IrohaGrpc
 
 def send_transaction_and_print_status(transaction):
     hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
@@ -21,7 +18,7 @@ def send_transaction_and_print_status(transaction):
     try:
         net.send_tx(transaction)
         time_start = time.perf_counter()
-    except grpc.RpcError:
+    except IrohaGrpc.RpcError:
         print("[ERROR] Cannot connect to server")
         return
     for i, status in enumerate(net.tx_status_stream(transaction)):
@@ -74,15 +71,16 @@ def get_keys(account_id):
     return private_key, public_key
 
 
-def store_telemetry_data(telemetry, drone_id, gateway_id):
-    print(f"[{gateway_id}@{IROHA_DOMAIN}] is storing info from {drone_id}")
-    telemetry['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+def store_telemetry_data(telemetry, uav_id, gateway_id):
+    time.
+    print(f"[{gateway_id}@{IROHA_DOMAIN}] is storing info from {uav_id}")
+    telemetry['timestamp'] = time.time()
     priv, pub = get_keys(gateway_id)
     iroha_gateway = Iroha(f"{gateway_id}@{IROHA_DOMAIN}")
 
     commands = []
     for key, value in telemetry.items():
-        commands.append(iroha_gateway.command('SetAccountDetail', account_id=f"{drone_id}@{IROHA_DOMAIN}", key=key,
+        commands.append(iroha_gateway.command('SetAccountDetail', account_id=f"{uav_id}@{IROHA_DOMAIN}", key=key,
                                               value=str(value)))
     tx = iroha_gateway.transaction(commands)
     IrohaCrypto.sign_transaction(tx, priv)
@@ -101,4 +99,6 @@ def get_device_details(device_id, gateway_id):
     print(detail) if detail else print("No Details!")
 
 
-net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
+def connect():
+    print(f"[System] Connecting to Iroha on {IROHA_HOST_ADDR}:{IROHA_PORT}")
+    net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
