@@ -2,7 +2,7 @@ import base64
 import json
 import socket
 import sys
-import asyncio
+import time
 
 print("     __                      __    _       __         __  __      __                   __ \n"
       "    / /   ____  ____  ____ _/ /   (_)___  / /__      / / / /___  / /__________  ____  / /_\n"
@@ -12,58 +12,89 @@ print("     __                      __    _       __         __  __      __     
       "                   /____/                                             /_/             ")
 from IrohaSetup import store_telemetry_data, get_device_details, DEBUG, connect
 
+TESTING = False
+last_token = []
+ack_wait = {}  # UAVs awaiting ACK
+server_address = ('localhost', 1730)
 
-async def listen_push_data():
+
+def listen_push_data():
     print("[System] Started Listener")
+    received_ok = False
     while True:
-        data, address = hotspot_socket.recvfrom(1024)
-        print("[PK] Received a packet -> ", end="")
-        push_ack = None
-        match data[3]:
-            case 0x00:
-                json_str = data[12:].decode('utf-8')
-                try:
-                    packet = json.loads(json_str)
-                    if 'stat' in packet:
-                        print("stat packet!")
-                    elif 'rxpk' in packet:
-                        print("transmission packet!")
-                        data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
-                        print(f"Data extracted: {data_decoded}") if DEBUG else None
-                        try:
-                            uav_id, tele = process_telemetry(data_decoded)
-                            store_telemetry_data(tele, uav_id, gateway_id)
-                            get_device_details(uav_id, gateway_id) if DEBUG else None
-                            send_downlink_packet(uplink_ack(packet['rxpk'][0], uav_id), address)
-                        except RuntimeWarning:
-                            print("[PK] Packet failed to be processed")
-                    else:
-                        print("[Error] Unknown packet type!")
-                except json.JSONDecodeError:
-                    print('[Error] Invalid JSON received!')
+        data, addr = hotspot_socket.recvfrom(1024)
 
-                token = data[1:3]
-                push_ack = bytes([2, token[0], token[1], 0x01])
+        if data[3] == 0x00:
+            packet_forwarder_ack(data[1:3], 0x01, addr)
+            push_data_packet(data, addr)
 
-            case 0x02:
-                print(f"PULL_DATA: Gateway-MAC = {data[4:11]}")
-                token = data[1:3]
-                push_ack = bytes([2, token[0], token[1], 0x04])
+        elif data[3] == 0x02:
+            packet_forwarder_ack(data[1:3], 0x04, addr)
+            if not received_ok:
+                print(f"[System] OK to send packets")
+                received_ok = True
+                if TESTING:
+                    test_tx_params(addr)
 
-            case 0x05:
-                print(f"TX_ACK: Token sent: {data[1:2]}")
-                try:
-                    json_str = data[12:].decode('utf-8')
-                    print(f"[PK] ERROR: {json_str}")
-                except IndexError:
-                    print("[PK] Packet sent OK")
+        elif data[3] == 0x05:
+            if data[1:3] in last_token:
+                print("[PK] Packet sent OK")
+                last_token.remove(data[1:3])
+            else:
+                print(f"[ERROR] Token not recognised {data[1:3]}")
 
-        # Send ACK to packet forwarder
-        if push_ack:
-            hotspot_socket.sendto(push_ack, address)
+        for key in ack_wait:
+            now = time.time()
+            if (now - ack_wait[key]) > 30:
+                print(f"[ACK] Resending ACK for {key}")
+                send_downlink_packet(key, uplink_ack(key), addr)
+                ack_wait[key] = time.time()
 
 
-def send_downlink_packet(txpk, address):
+def push_data_packet(data, addr):
+    print("[PK] Received a packet -> ", end="") if DEBUG else None
+    try:
+        packet = json.loads(data[12:].decode('utf-8'))
+        if 'stat' in packet:
+            print("stat packet!") if DEBUG else None
+        elif 'rxpk' in packet:
+            print("transmission packet!") if DEBUG else None
+            data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
+
+            #  Check if the packet is at the expected frequency
+            if not (packet['rxpk'][0]['freq'] == 867.5):
+                print(f"[PK] Not for me : freq {packet['rxpk'][0]['freq']}")
+                return
+
+            #  Check if the packet is an ACK packet
+            if data_decoded.decode('utf-8')[1:] in ack_wait:
+                print(f"[PK] Received ACK from {data_decoded.decode('utf-8')[1:]}")
+                del ack_wait[data_decoded.decode('utf-8')[1:]]
+                return
+
+            #  Process the packet in a different thread to free up this one
+            print(f"Data extracted: {data_decoded}") if DEBUG else None
+            try:
+                uav_id, tele = process_telemetry(data_decoded)
+                # store_telemetry_data(tele, uav_id, gateway_id)
+                # get_device_details(uav_id, gateway_id) if DEBUG else None
+                send_downlink_packet(uav_id, uplink_ack(uav_id), addr)
+                ack_wait[uav_id] = time.time()
+            except RuntimeWarning:
+                print("[PK] Data failed to be processed")
+                print(f"Data = {data_decoded}")
+        else:
+            print("[Error] Unknown packet type!")
+    except json.JSONDecodeError:
+        print('[Error] Invalid JSON received!')
+
+
+def packet_forwarder_ack(token, identifier, addr):
+    push_ack = bytes([2, token[0], token[1], identifier])
+    hotspot_socket.sendto(push_ack, addr)
+
+
+def send_downlink_packet(uav_id, txpk, addr):
     json_data = json.dumps({"txpk": txpk})
 
     # Create a PULL_RESP packet
@@ -71,32 +102,68 @@ def send_downlink_packet(txpk, address):
     token = b"\x12\x34"
     packet_identifier = 0x03
     packet = bytes([protocol_version]) + token + bytes([packet_identifier]) + json_data.encode()
+    last_token.append(token)
 
     # Send the packet to the packet forwarder
-    print("[System] Sending PULL_RESP packet...", end="")
-    hotspot_socket.sendto(packet, address)
-    print("sent!")
+    print("[System] Sending Downlink") if DEBUG or TESTING else None
+    hotspot_socket.sendto(packet, addr)
 
 
-def uplink_ack(downlink_packet, uav_id):
-    print(downlink_packet)
+def uplink_ack(uav_id):
+    print(f"[ACK] Sending ACK to {uav_id}")
     status = 1  # TODO: Maybe send the UAV back some useful information here
     ack = f"{uav_id}{gateway_id}{status}"
     ack_encoded = base64.b64encode(ack.encode('utf-8')).decode('utf-8')
 
     txpk = {
         'imme': True,  # Send packet immediately
-        'freq': downlink_packet['freq'],  # TX central frequency in MHz
-        'rfch': downlink_packet['rfch'],  # Concentrator "RF chain" used for TX
-        'powe': 14,  # TX output power in dBm
+        'freq': 867.5,  # downlink_packet['freq'],  # TX central frequency in MHz
+        'rfch': 0,  # downlink_packet['rfch'],  # Concentrator "RF chain" used for TX
+        'powe': 20,  # TX output power in dBm
         'modu': 'LORA',  # Modulation identifier
-        "datr": 'SF11BW125',  # LoRa data-rate identifier (eg. SF12BW500)
-        'size': sys.getsizeof(ack_encoded),  # RF packet payload size in bytes
-        "codr": "4/6",  # LoRa ECC coding rate identifier
+        "datr": 'SF7BW125',  # LoRa data-rate identifier (eg. SF12BW500)
+        'size': len(ack_encoded.encode('ascii')),  # RF packet payload size in bytes
+        "codr": "4/5",  # LoRa ECC coding rate identifier
         "ipol": False,  # Lora modulation polarization inversion
         'data': ack_encoded  # Base64 encoded RF packet payload
     }
     return txpk
+
+
+def test_tx_params(addr):
+    global TESTING
+    print("[TESTING] Trying all combinations")
+    datr_options = ['SF7BW125', 'SF8BW125', 'SF9BW125', 'SF10BW125', 'SF11BW125', 'SF12BW125', 'SF7BW250', 'SF8BW250',
+                    'SF12BW250']
+    codr_options = ['4/5', '4/6', '4/7', '4/8']
+    freq_options = [868.5, 867.1, 867.3, 867.5]
+    txpk = {
+        'imme': True,  # Send packet immediately
+        'rfch': 0,  # downlink_packet['rfch'],  # Concentrator "RF chain" used for TX
+        'modu': 'LORA',  # Modulation identifier
+        "ipol": False,  # Lora modulation polarization inversion
+        'powe': 20
+    }
+    for freq in freq_options:
+        print(f"Testing {freq}")
+        for datr in datr_options:
+            print(f"    Testing {datr}")
+            for codr in codr_options:
+                print(f"        Testing {codr}")
+                txpk['datr'] = datr
+                txpk['codr'] = codr
+                txpk['freq'] = freq
+
+                ack = f"{txpk['datr']} {txpk['codr']} {txpk['freq']} "  # f"{uav_id}{gateway_id}{status}"
+                ack_encoded = base64.b64encode(ack.encode('utf-8')).decode('utf-8')
+
+                txpk['data'] = ack_encoded
+                txpk['size'] = len(ack_encoded.encode('utf-8'))
+                send_downlink_packet('u1', txpk, addr)
+                time.sleep(1)
+
+    print("[TESTING] Testing complete")
+    TESTING = False
 
 
 def process_telemetry(decoded_data):
@@ -122,19 +189,38 @@ def process_telemetry(decoded_data):
     except IndexError:
         raise RuntimeWarning(f"[ERROR] Data failed to be cast to a JSON!\nData Decoded = {data_list}")
     print(f"[{uav_id}] Telemetry: {telemetry}") if DEBUG else None
+    print(f"[PK] from {uav_id} ")
     return uav_id, telemetry
 
 
-async def task_loop():
-    packet_task = asyncio.create_task(listen_push_data())
-    await packet_task
+def remove_duplicates(new_telemetry):
+    global last_telemetry
+    new_bytes = base64.b64decode(new_telemetry)
+    old_bytes = base64.b64decode(last_telemetry)
+
+    if new_bytes == old_bytes:
+        return None
+
+    new_dict = json.loads(new_bytes)
+    old_dict = json.loads(old_bytes)
+
+    deleted_key_count = 0
+
+    for key in new_dict.keys():
+        if key in old_dict and new_dict[key] == old_dict[key]:
+            deleted_key_count += 1
+            del new_dict[key]
+
+    print(f"[PK] Removed {deleted_key_count} matching values!")
+    last_telemetry = new_telemetry
+    filtered_telemetry = json.dumps(new_dict)
+    return base64.b64encode(filtered_telemetry.encode('utf-8')).decode('utf-8')
 
 
-try:
-    if bool(sys.argv[1]):
-        print(f"[System] Debug: ON")
-        DEBUG = True
-except IndexError:
+if len(sys.argv) > 1 and bool(sys.argv[1]):
+    print(f"[System] Debug: ON")
+    DEBUG = True
+else:
     print(f"[System] Debug: OFF")
 
 gateway_id = "g1"
@@ -142,7 +228,9 @@ print(f"[System] Gateway ID: {gateway_id}")
 connect()
 print("[System] Connecting to the packet forwarder...", end="")
 hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-hotspot_socket.bind(('localhost', 1730))
+hotspot_socket.bind(server_address)
 print("Connected!")
+last_telemetry = None
 
-asyncio.run(task_loop())
+while True:
+    listen_push_data()

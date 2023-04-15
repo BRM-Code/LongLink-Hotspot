@@ -10,6 +10,7 @@ IROHA_DOMAIN = "test"
 DEBUG = False
 net = IrohaGrpc
 
+
 def send_transaction_and_print_status(transaction):
     hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
     creator_id = transaction.payload.reduced_payload.creator_account_id
@@ -72,7 +73,6 @@ def get_keys(account_id):
 
 
 def store_telemetry_data(telemetry, uav_id, gateway_id):
-    time.
     print(f"[{gateway_id}@{IROHA_DOMAIN}] is storing info from {uav_id}")
     telemetry['timestamp'] = time.time()
     priv, pub = get_keys(gateway_id)
