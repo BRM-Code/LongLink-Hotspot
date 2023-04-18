@@ -99,6 +99,11 @@ def get_device_details(device_id, gateway_id):
     print(detail) if detail else print("No Details!")
 
 
-def connect():
-    print(f"[System] Connecting to Iroha on {IROHA_HOST_ADDR}:{IROHA_PORT}")
-    net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
+def iroha_connect():
+    global net
+    print(f"[System] Connecting to Iroha...",end="")
+    try:
+        net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
+    except IrohaGrpc.RpcError:
+        print(f"[ERROR] Iroha not found on {IROHA_HOST_ADDR}:{IROHA_PORT}")
+    print("Connected!")
