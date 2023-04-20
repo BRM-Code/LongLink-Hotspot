@@ -1,5 +1,6 @@
 import base64
 import json
+import select
 import socket
 import struct
 import sys
@@ -16,15 +17,17 @@ from IrohaSetup import store_telemetry_data, get_device_details, DEBUG, iroha_co
 
 TESTING = False
 ENCRYPTED_PACKETS = True
-ACKNOWLEDGING_PACKETS = True
+ACKNOWLEDGING_PACKETS = False
 received_ok = False
 last_token = []
 ack_wait = {}  # UAVs awaiting ACK
 server_address = ('localhost', 1730)
-Packet_timer = 0
+ack_timer = 0
+packet_timer = 0
 known_uav_keys = {'u1': (
-bytes([0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C]),
-bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))}
+    bytes([0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C]),
+    bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))}
+uav_pk_count = {'u1': 0}
 
 PROTOCOL_VERSION = 0x02
 PUSH_DATA_ID = 0x00
@@ -38,66 +41,106 @@ def listen_for_data():
     while True:
         try:
             return hotspot_socket.recvfrom(1024)
-        except socket.error:
+        except socket.error or socket.timeout:
             pass
 
 
-def push_data_packet(rec_packet, address):
-    global Packet_timer
-    print("[PK] Received a packet -> ", end="") if DEBUG else None
-    try:
-        packet = json.loads(rec_packet[12:].decode('utf-8'))
-        if 'stat' in packet:
-            print("stat packet!") if DEBUG else None
-        elif 'rxpk' in packet:
-            print("transmission packet!") if DEBUG else None
-            if ENCRYPTED_PACKETS:
-                # Checking if packet is from known UAV
-                base1 = base64.b64decode(packet['rxpk'][0]['data'])
-                uav_id = base1[1:3].decode('utf-8')
-                if uav_id not in known_uav_keys:
-                    print(f"[PK] unable to find UAV with ID {uav_id}, packet likely not for me!")
-                    return
+def sort_packet(data, addr):
+    global received_ok
+    if data[3] == PUSH_DATA_ID:
+        packet_forwarder_ack(data[1:3], PUSH_ACK_ID, addr)
+        data_packet(data, addr)
+        return False
 
-                #  Check if the packet is an ACK packet
-                if ACKNOWLEDGING_PACKETS and uav_id in ack_wait:
-                    print(f"[PK] Received ACK from {uav_id} it took {round((time.time() - Packet_timer), 2)} seconds")
+    elif data[3] == PULL_DATA_ID:
+        packet_forwarder_ack(data[1:3], PULL_ACK_ID, addr)
+        if not received_ok:
+            print(f"[System] OK to send packets")
+            received_ok = True
+            if TESTING:
+                test_tx_params(addr)
+        return False
+
+    elif data[3] == TX_ACK:
+        return True
+
+
+def data_packet(rec_packet, address):
+    global ack_timer
+    global packet_timer
+    print("[PK] Received a packet -> ", end="") if DEBUG else None
+    packet = json.loads(rec_packet[12:].decode('utf-8'))
+    if 'stat' in packet:
+        print("stat packet!") if DEBUG else None
+    elif 'rxpk' in packet:
+        print("transmission packet!") if DEBUG else None
+        if ENCRYPTED_PACKETS:
+            # Checking if packet is from known UAV
+            base1 = base64.b64decode(packet['rxpk'][0]['data'])
+            try:
+                uav_id = base1[1:3].decode('utf-8')
+            except UnicodeDecodeError:
+                print("[PK] unable to decode UAV_ID, packet likely not for me!")
+                return
+
+            if uav_id not in known_uav_keys:
+                print(f"[PK] unable to find UAV_ID '{uav_id}', packet likely not for me!")
+                return
+
+            #  Check if the packet is an ACK packet
+            if ACKNOWLEDGING_PACKETS or uav_id in ack_wait:
+                if uav_id == str(base1.decode('utf-8'))[1:]:
+                    print(f"[PK] Received ACK from {uav_id} it took {round((time.time() - ack_timer), 2)} seconds")
+                    # ACK messages aren't encrypted
+                    print(f"ACK message= {base1.decode('utf-8')}")
                     del ack_wait[uav_id]
                     return
 
-                # It is so now we attempt decrypt
-                # Remove UAV_ID to allow decryption
-                base1 = base1.decode('utf-8').replace(uav_id, '').encode('utf-8')
-                base2 = base64.b64decode(base1)
-                uav_key_iv = known_uav_keys[uav_id]
-                try:
-                    cipher = AES.new(uav_key_iv[0], AES.MODE_CBC, uav_key_iv[1])
-                    data_decoded = cipher.decrypt(base2)
-                except ValueError:
-                    print(f"[PK][{uav_id}] ERROR: data couldn't be decrypted, likely not for me or key/iv incorrect")
-                    return
-            else:
-                data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
+                print(f"[PK] Expecting ACK from {uav_id}, Got normal packet instead")
+                del ack_wait[uav_id]
+                uav_pk_count[uav_id] = 1
 
-            data_list = str(data_decoded[1:-14].decode('utf-8')).split(' ')
+            if packet_timer > 0:
+                print(f"[PK] time between packets {round((time.time() - packet_timer), 2)}")
 
-            print(f"Data extracted: {data_decoded}") if DEBUG else None
+            packet_timer = time.time()
+
+            # It is so now we attempt decrypt
+            # Remove UAV_ID to allow decryption
+            base1 = base1.decode('utf-8').replace(uav_id, '').encode('utf-8')
+            base2 = base64.b64decode(base1)
+            uav_key_iv = known_uav_keys[uav_id]
             try:
-                uav_id, tele = process_telemetry(uav_id, data_list)
-                if uav_id:
-                    Packet_timer = time.time()
-                # store_telemetry_data(tele, uav_id, gateway_id)
-                # get_device_details(uav_id, gateway_id) if DEBUG else None
-                if ACKNOWLEDGING_PACKETS:
-                    send_downlink_packet(uplink_ack(uav_id), address)
-                    ack_wait[uav_id] = 0
-            except RuntimeWarning:
-                print("[PK] Data failed to be processed")
-                print(f"Data = {data_decoded}")
+                cipher = AES.new(uav_key_iv[0], AES.MODE_CBC, uav_key_iv[1])
+                data_decoded = cipher.decrypt(base2)
+            except ValueError:
+                print(f"[PK][{uav_id}] ERROR: data couldn't be decrypted, likely not for me or key/iv incorrect")
+                return
+            # increment packet counter
+            uav_pk_count[uav_id] += 1
         else:
-            print("[Error] Unknown packet type!")
-    except json.JSONDecodeError:
-        print('[Error] Invalid JSON received!')
+            # Only need to base54 decode once
+            data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
+            uav_id = data_decoded[1:3].decode('utf-8')
+            data_decoded = data_decoded.decode('utf-8').replace(uav_id, '').encode('utf-8')
+
+        data_list = str(data_decoded[1:-14].decode('utf-8')).split(' ')
+
+        print(f"Data extracted: {data_decoded}") if DEBUG else None
+        try:
+            uav_id, tele = process_telemetry(uav_id, data_list)
+            # store_telemetry_data(tele, uav_id, gateway_id)
+            # get_device_details(uav_id, gateway_id) if DEBUG else None
+            if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == 8:
+                uav_pk_count[uav_id] = 0
+                ack_wait[uav_id] = 0
+                ack_timer = time.time()
+                send_downlink_packet(uplink_ack(uav_id), address)
+        except RuntimeWarning:
+            print("[PK] Data failed to be processed")
+            print(f"Data = {data_decoded}")
+    else:
+        print("[Error] Unknown packet type!")
 
 
 def packet_forwarder_ack(token, identifier, address):
@@ -118,15 +161,19 @@ def send_downlink_packet(txpk, address):
 
     # Send the packet to the packet forwarder
     print("[System] Sending Downlink") if DEBUG or TESTING else None
+
+    hotspot_socket.sendto(packet, address)
+    time.sleep(0.1)
+    hotspot_socket.sendto(packet, address)
+
     while True:
-        hotspot_socket.sendto(packet, address)
-        #hotspot_socket.sendmsg(packet, address)
         rec_packet, address = listen_for_data()
         if rec_packet[3] == 0x05:
             print(f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')}")
             break
-        time.sleep(0.1)
         print("Re-sending")
+        hotspot_socket.sendto(packet, address)
+        time.sleep(0.1)
 
 
 def uplink_ack(uav_id):
@@ -204,10 +251,13 @@ def process_telemetry(uav_id, data_list):
             'RSSI': data_list[7],
             'arm': bool(data_list[11][1])
         }
+        if not uav_pk_count[uav_id] == int(data_list[11][2]):
+            print(f"[PK ERROR] Packet No doesn't match {uav_pk_count[uav_id]} not {data_list[11][2]}, syncing...")
+            uav_pk_count[uav_id] = int(data_list[11][2])
     except IndexError:
         raise RuntimeWarning(f"[ERROR] Data failed to be cast to a JSON!\nData Decoded = {data_list}")
     print(f"[{uav_id}] Telemetry: {telemetry}") if DEBUG else None
-    print(f"[PK] from {uav_id} ")
+    print(f"[PK] from {uav_id} count = {uav_pk_count[uav_id]}")
     return uav_id, telemetry
 
 
@@ -241,6 +291,7 @@ if len(sys.argv) > 1 and bool(sys.argv[1]):
 else:
     print(f"[System] Debug: OFF")
 print(f"[System] Encrypted packets = {ENCRYPTED_PACKETS}")
+print(f"[System] Acknowledging Packet mode {ACKNOWLEDGING_PACKETS}")
 gateway_id = "g1"
 print(f"[System] Gateway ID: {gateway_id}")
 iroha_connect()
@@ -248,28 +299,11 @@ print("[System] Connecting to the packet forwarder...", end="")
 hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 hotspot_socket.bind(server_address)
 hotspot_socket.setblocking(False)
+hotspot_socket.settimeout(0.1)
 
 print("Connected!")
 last_telemetry = None
 
 while True:
     data, addr = listen_for_data()
-
-    if data[3] == PUSH_DATA_ID:
-        packet_forwarder_ack(data[1:3], PUSH_ACK_ID, addr)
-        push_data_packet(data, addr)
-
-    elif data[3] == PULL_DATA_ID:
-        packet_forwarder_ack(data[1:3], PULL_ACK_ID, addr)
-        if not received_ok:
-            print(f"[System] OK to send packets")
-            received_ok = True
-            if TESTING:
-                test_tx_params(addr)
-
-    elif data[3] == TX_ACK:
-        if data[1:3] in last_token:
-            print("[PK] Packet sent OK")
-            last_token.remove(data[1:3])
-        else:
-            print(f"[ERROR] Token not recognised {data[1:3]}")
+    sort_packet(data, addr)
