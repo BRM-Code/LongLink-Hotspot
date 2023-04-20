@@ -135,7 +135,7 @@ def data_packet(rec_packet, address):
                 uav_pk_count[uav_id] = 0
                 ack_wait[uav_id] = 0
                 ack_timer = time.time()
-                send_downlink_packet(uplink_ack(uav_id), address)
+                send_downlink_packet(uplink_ack(uav_id, packet['rxpk'][0]), address)
         except RuntimeWarning:
             print("[PK] Data failed to be processed")
             print(f"Data = {data_decoded}")
@@ -176,7 +176,7 @@ def send_downlink_packet(txpk, address):
         time.sleep(0.1)
 
 
-def uplink_ack(uav_id):
+def uplink_ack(uav_id, packet):
     print(f"[ACK] Sending ACK to {uav_id}")
     status = 1  # TODO: Maybe send the UAV back some useful information here
     ack = f"{uav_id}{gateway_id}{status}".encode('utf-8')
@@ -184,13 +184,13 @@ def uplink_ack(uav_id):
 
     txpk = {
         'imme': True,  # Send packet immediately
-        'freq': 867.5,  # downlink_packet['freq'],  # TX central frequency in MHz
+        'freq': packet["freq"],  # downlink_packet['freq'],  # TX central frequency in MHz
         'rfch': 0,  # downlink_packet['rfch'],  # Concentrator "RF chain" used for TX
         'powe': 20,  # TX output power in dBm
         'modu': 'LORA',  # Modulation identifier
-        "datr": 'SF7BW125',  # LoRa data-rate identifier (eg. SF12BW500)
+        "datr": packet["datr"],  # LoRa data-rate identifier (eg. SF12BW500)
         'size': len(ack),  # RF packet payload size in bytes
-        "codr": "4/5",  # LoRa ECC coding rate identifier
+        "codr": packet["codr"],  # LoRa ECC coding rate identifier
         "ipol": False,  # Lora modulation polarization inversion
         'data': ack_encoded  # Base64 encoded RF packet payload
     }
