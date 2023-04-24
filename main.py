@@ -1,6 +1,5 @@
 import base64
 import json
-import select
 import socket
 import struct
 import sys
@@ -21,9 +20,13 @@ ACKNOWLEDGING_PACKETS = False
 received_ok = False
 last_token = []
 ack_wait = {}  # UAVs awaiting ACK
+
 server_address = ('localhost', 1730)
+down_address = ('localhost', 1735)
+
 ack_timer = 0
 packet_timer = 0
+ack_construct_timer = 0
 known_uav_keys = {'u1': (
     bytes([0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C]),
     bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))}
@@ -37,37 +40,38 @@ PULL_ACK_ID = 0x04
 TX_ACK = 0x05
 
 
-def listen_for_data():
+def listen_for_data(listen_socket):
     while True:
         try:
-            return hotspot_socket.recvfrom(1024)
+            return listen_socket.recvfrom(1024)
         except socket.error or socket.timeout:
             pass
 
 
-def sort_packet(data, addr):
+def sort_packet(packet, address):
     global received_ok
-    if data[3] == PUSH_DATA_ID:
-        packet_forwarder_ack(data[1:3], PUSH_ACK_ID, addr)
-        data_packet(data, addr)
+    if packet[3] == PUSH_DATA_ID:
+        packet_forwarder_ack(packet[1:3], PUSH_ACK_ID, address)
+        data_packet(packet, address)
         return False
 
-    elif data[3] == PULL_DATA_ID:
-        packet_forwarder_ack(data[1:3], PULL_ACK_ID, addr)
+    elif packet[3] == PULL_DATA_ID:
+        packet_forwarder_ack(packet[1:3], PULL_ACK_ID, address)
         if not received_ok:
             print(f"[System] OK to send packets")
             received_ok = True
             if TESTING:
-                test_tx_params(addr)
+                test_tx_params(address)
         return False
 
-    elif data[3] == TX_ACK:
+    elif packet[3] == TX_ACK:
         return True
 
 
 def data_packet(rec_packet, address):
     global ack_timer
     global packet_timer
+    global ack_construct_timer
     print("[PK] Received a packet -> ", end="") if DEBUG else None
     packet = json.loads(rec_packet[12:].decode('utf-8'))
     if 'stat' in packet:
@@ -100,7 +104,7 @@ def data_packet(rec_packet, address):
                 del ack_wait[uav_id]
                 uav_pk_count[uav_id] = 1
 
-            if packet_timer > 0:
+            if packet_timer > 0 and not uav_pk_count[uav_id] == 1:
                 print(f"[PK] time between packets {round((time.time() - packet_timer), 2)}")
 
             packet_timer = time.time()
@@ -125,6 +129,7 @@ def data_packet(rec_packet, address):
             data_decoded = data_decoded.decode('utf-8').replace(uav_id, '').encode('utf-8')
 
         data_list = str(data_decoded[1:-14].decode('utf-8')).split(' ')
+        print(f"Data List: {data_decoded[:-14].decode('utf-8')}")
 
         print(f"Data extracted: {data_decoded}") if DEBUG else None
         try:
@@ -132,6 +137,7 @@ def data_packet(rec_packet, address):
             # store_telemetry_data(tele, uav_id, gateway_id)
             # get_device_details(uav_id, gateway_id) if DEBUG else None
             if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == 8:
+                ack_construct_timer = time.time()
                 uav_pk_count[uav_id] = 0
                 ack_wait[uav_id] = 0
                 ack_timer = time.time()
@@ -155,25 +161,23 @@ def send_downlink_packet(txpk, address):
     packet_identifier = 0x03
     packet_data = json_data.encode()
     packet_size = len(packet_data)
-
     packet = struct.pack("!B 2s B {0}s".format(packet_size), PROTOCOL_VERSION, token, packet_identifier, packet_data)
     last_token.append(token)
 
     # Send the packet to the packet forwarder
     print("[System] Sending Downlink") if DEBUG or TESTING else None
-
-    hotspot_socket.sendto(packet, address)
-    time.sleep(0.1)
-    hotspot_socket.sendto(packet, address)
-
+    print(f"ACk contructed in {round((time.time() - ack_construct_timer), 2)}")
+    ack_tx_pck = time.time()
+    rec_packet, address = listen_for_data(downlink_socket)
+    downlink_socket.sendto(packet, address)
     while True:
-        rec_packet, address = listen_for_data()
+        rec_packet, address = listen_for_data(downlink_socket)
         if rec_packet[3] == 0x05:
-            print(f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')}")
+            print(f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')} took {round((time.time() - ack_tx_pck), 2)} seconds")
             break
-        print("Re-sending")
-        hotspot_socket.sendto(packet, address)
-        time.sleep(0.1)
+        # print("Re-sending")
+        # downlink_socket.sendto(packet, address)
+        # time.sleep(0.1)
 
 
 def uplink_ack(uav_id, packet):
@@ -296,14 +300,20 @@ gateway_id = "g1"
 print(f"[System] Gateway ID: {gateway_id}")
 iroha_connect()
 print("[System] Connecting to the packet forwarder...", end="")
+
 hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 hotspot_socket.bind(server_address)
 hotspot_socket.setblocking(False)
-hotspot_socket.settimeout(0.1)
+hotspot_socket.settimeout(0.3)
+
+downlink_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+downlink_socket.bind(down_address)
+hotspot_socket.setblocking(False)
+hotspot_socket.settimeout(0.3)
 
 print("Connected!")
 last_telemetry = None
 
 while True:
-    data, addr = listen_for_data()
+    data, addr = listen_for_data(hotspot_socket)
     sort_packet(data, addr)

@@ -72,7 +72,7 @@ def get_keys(account_id):
     return private_key, public_key
 
 
-def store_telemetry_data(telemetry, uav_id, gateway_id):
+def store_telemetry_data(telemetry: dict[str:str], uav_id: str, gateway_id: str):
     print(f"[{gateway_id}@{IROHA_DOMAIN}] is storing info from {uav_id}")
     telemetry['timestamp'] = time.time()
     priv, pub = get_keys(gateway_id)
@@ -101,7 +101,7 @@ def get_device_details(device_id, gateway_id):
 
 def iroha_connect():
     global net
-    print(f"[System] Connecting to Iroha...",end="")
+    print(f"[System] Connecting to Iroha...", end="")
     try:
         net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
     except IrohaGrpc.RpcError:
