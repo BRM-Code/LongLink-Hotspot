@@ -23,7 +23,7 @@ ack_wait = {}  # UAVs awaiting ACK
 
 server_address = ('localhost', 1730)
 down_address = ('localhost', 1735)
-
+new_downlink_address = ('', 0)
 ack_timer = 0
 packet_timer = 0
 ack_construct_timer = 0
@@ -155,6 +155,7 @@ def packet_forwarder_ack(token, identifier, address):
 
 
 def send_downlink_packet(txpk, address):
+    global new_downlink_address
     json_data = json.dumps({"txpk": txpk})
 
     token = b"\x12\x34"
@@ -166,18 +167,21 @@ def send_downlink_packet(txpk, address):
 
     # Send the packet to the packet forwarder
     print("[System] Sending Downlink") if DEBUG or TESTING else None
-    print(f"ACk contructed in {round((time.time() - ack_construct_timer), 2)}")
+
+    if new_downlink_address[1] == 0:
+        rec_packet, address = listen_for_data(downlink_socket)
+        new_downlink_address = address
+    else:
+        address = new_downlink_address
+
     ack_tx_pck = time.time()
-    rec_packet, address = listen_for_data(downlink_socket)
     downlink_socket.sendto(packet, address)
     while True:
         rec_packet, address = listen_for_data(downlink_socket)
         if rec_packet[3] == 0x05:
-            print(f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')} took {round((time.time() - ack_tx_pck), 2)} seconds")
+            print(
+                f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')} took {round((time.time() - ack_tx_pck), 2)} seconds")
             break
-        # print("Re-sending")
-        # downlink_socket.sendto(packet, address)
-        # time.sleep(0.1)
 
 
 def uplink_ack(uav_id, packet):
