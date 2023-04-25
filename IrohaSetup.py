@@ -1,14 +1,16 @@
 import binascii
 import time
+
+import grpc
+
 from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
 from iroha import Iroha, IrohaGrpc, IrohaCrypto
 
-IROHA_HOST_ADDR = '192.168.0.199'
+IROHA_HOST_ADDR = '192.168.0.42'
 IROHA_PORT = '50051'
 IROHA_DOMAIN = "test"
 DEBUG = False
-net = IrohaGrpc
 
 
 def send_transaction_and_print_status(transaction):
@@ -16,19 +18,21 @@ def send_transaction_and_print_status(transaction):
     creator_id = transaction.payload.reduced_payload.creator_account_id
     commands = get_commands_from_tx(transaction)
     print(f'[{creator_id}] Transaction "{commands}", hash = {hex_hash}') if DEBUG else None
+    print("Sending tx")
     try:
-        net.send_tx(transaction)
-        time_start = time.perf_counter()
-    except IrohaGrpc.RpcError:
-        print("[ERROR] Cannot connect to server")
+        net.send_tx(transaction, timeout=10)
+    except grpc._channel._InactiveRpcError:
+        print("TX Timed out!")
         return
+    time_start = time.time()
+    print("Sent!")
     for i, status in enumerate(net.tx_status_stream(transaction)):
         status_name, status_code, error_code = status
         if status_name == "STATELESS_VALIDATION_SUCCESS":
-            print(f"[{creator_id}] Transaction validated at {time.perf_counter() - time_start}")
+            print(f"[{creator_id}] Transaction validated in {round(time.time() - time_start, 2)}")
         if status_name == "COMMITTED":
-            time_end = round((time.perf_counter() - time_start) * 1000) / 1000
-            print(f"[{creator_id}] Transaction took: {time_end} seconds")
+            time_end = (time.time() - time_start)
+            print(f"[{creator_id}] Transaction took: {round(time_end, 2)} seconds")
             return
 
         if status_name in ('STATEFUL_VALIDATION_FAILED', 'STATELESS_VALIDATION_FAILED', 'REJECTED'):
@@ -100,10 +104,13 @@ def get_device_details(device_id, gateway_id):
 
 
 def iroha_connect():
-    global net
-    print(f"[System] Connecting to Iroha...", end="")
-    try:
-        net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
-    except IrohaGrpc.RpcError:
-        print(f"[ERROR] Iroha not found on {IROHA_HOST_ADDR}:{IROHA_PORT}")
+    # global net
+    # print(f"[System] Connecting to Iroha...", end="")
+    # try:
+    #
+    # except IrohaGrpc.RpcError:
+    #     print(f"[ERROR] Iroha not found on {IROHA_HOST_ADDR}:{IROHA_PORT}")
     print("Connected!")
+
+
+net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")

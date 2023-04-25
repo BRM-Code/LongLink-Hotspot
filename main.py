@@ -39,6 +39,7 @@ PULL_DATA_ID = 0x02
 PULL_ACK_ID = 0x04
 TX_ACK = 0x05
 
+ACK_RATIO = 8
 
 def listen_for_data(listen_socket):
     while True:
@@ -52,7 +53,7 @@ def sort_packet(packet, address):
     global received_ok
     if packet[3] == PUSH_DATA_ID:
         packet_forwarder_ack(packet[1:3], PUSH_ACK_ID, address)
-        data_packet(packet, address)
+        data_packet(packet)
         return False
 
     elif packet[3] == PULL_DATA_ID:
@@ -68,10 +69,11 @@ def sort_packet(packet, address):
         return True
 
 
-def data_packet(rec_packet, address):
+def data_packet(rec_packet):
     global ack_timer
     global packet_timer
     global ack_construct_timer
+    global ACK_RATIO
     print("[PK] Received a packet -> ", end="") if DEBUG else None
     packet = json.loads(rec_packet[12:].decode('utf-8'))
     if 'stat' in packet:
@@ -82,7 +84,8 @@ def data_packet(rec_packet, address):
             # Checking if packet is from known UAV
             base1 = base64.b64decode(packet['rxpk'][0]['data'])
             try:
-                uav_id = base1[1:3].decode('utf-8')
+                raw_packet = base1.decode('utf-8')
+                uav_id = raw_packet[1:3]
             except UnicodeDecodeError:
                 print("[PK] unable to decode UAV_ID, packet likely not for me!")
                 return
@@ -93,25 +96,32 @@ def data_packet(rec_packet, address):
 
             #  Check if the packet is an ACK packet
             if ACKNOWLEDGING_PACKETS or uav_id in ack_wait:
-                if uav_id == str(base1.decode('utf-8'))[1:]:
-                    print(f"[PK] Received ACK from {uav_id} it took {round((time.time() - ack_timer), 2)} seconds")
-                    # ACK messages aren't encrypted
-                    print(f"ACK message= {base1.decode('utf-8')}")
-                    del ack_wait[uav_id]
-                    return
+                data_list = raw_packet.split(' ')
+                try:
+                    if int(data_list[1]) == 7:
+                        print(f"[PK] Received ACK from {uav_id} it took {round((time.time() - ack_timer), 2)} seconds")
+                        # ACK messages aren't encrypted
+                        print(f"Last ACK RSSI = {data_list[3]}")
+                        if data_list[2] == ACK_RATIO:
+                            print(f"Updating ACK_RATIO from {ACK_RATIO} to {data_list[2]}")
+                            ACK_RATIO = int(data_list[2])
+                        del ack_wait[uav_id]
+                        return
+                except IndexError:
+                    print(f"Packet Failed to be parsed {raw_packet}")
 
                 print(f"[PK] Expecting ACK from {uav_id}, Got normal packet instead")
                 del ack_wait[uav_id]
-                uav_pk_count[uav_id] = 1
+                uav_pk_count[uav_id] = 0
 
-            if packet_timer > 0 and not uav_pk_count[uav_id] == 1:
+            if packet_timer > 0:
                 print(f"[PK] time between packets {round((time.time() - packet_timer), 2)}")
 
             packet_timer = time.time()
 
             # It is so now we attempt decrypt
             # Remove UAV_ID to allow decryption
-            base1 = base1.decode('utf-8').replace(uav_id, '').encode('utf-8')
+            base1 = raw_packet.replace(uav_id, '').encode('utf-8')
             base2 = base64.b64decode(base1)
             uav_key_iv = known_uav_keys[uav_id]
             try:
@@ -129,19 +139,17 @@ def data_packet(rec_packet, address):
             data_decoded = data_decoded.decode('utf-8').replace(uav_id, '').encode('utf-8')
 
         data_list = str(data_decoded[1:-14].decode('utf-8')).split(' ')
-        print(f"Data List: {data_decoded[:-14].decode('utf-8')}")
 
         print(f"Data extracted: {data_decoded}") if DEBUG else None
         try:
             uav_id, tele = process_telemetry(uav_id, data_list)
-            # store_telemetry_data(tele, uav_id, gateway_id)
+            store_telemetry_data(tele, uav_id, gateway_id)
             # get_device_details(uav_id, gateway_id) if DEBUG else None
-            if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == 8:
+            if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == ACK_RATIO:
                 ack_construct_timer = time.time()
                 uav_pk_count[uav_id] = 0
                 ack_wait[uav_id] = 0
-                ack_timer = time.time()
-                send_downlink_packet(uplink_ack(uav_id, packet['rxpk'][0]), address)
+                send_downlink_packet(uplink_ack(uav_id, packet['rxpk'][0]))
         except RuntimeWarning:
             print("[PK] Data failed to be processed")
             print(f"Data = {data_decoded}")
@@ -154,8 +162,9 @@ def packet_forwarder_ack(token, identifier, address):
     hotspot_socket.sendto(push_ack, address)
 
 
-def send_downlink_packet(txpk, address):
+def send_downlink_packet(txpk):
     global new_downlink_address
+    global ack_timer
     json_data = json.dumps({"txpk": txpk})
 
     token = b"\x12\x34"
@@ -179,8 +188,8 @@ def send_downlink_packet(txpk, address):
     while True:
         rec_packet, address = listen_for_data(downlink_socket)
         if rec_packet[3] == 0x05:
-            print(
-                f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')} took {round((time.time() - ack_tx_pck), 2)} seconds")
+            print(f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')} took {round((time.time() - ack_tx_pck), 2)} seconds")
+            ack_timer = time.time()
             break
 
 
@@ -234,7 +243,7 @@ def test_tx_params(address):
 
                 txpk['data'] = ack_encoded
                 txpk['size'] = len(ack_encoded.encode('utf-8'))
-                send_downlink_packet(txpk, address)
+                send_downlink_packet(txpk)
                 time.sleep(1)
 
     print("[TESTING] Testing complete")
@@ -307,12 +316,12 @@ print("[System] Connecting to the packet forwarder...", end="")
 
 hotspot_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 hotspot_socket.bind(server_address)
-hotspot_socket.setblocking(False)
+hotspot_socket.setblocking(True)
 hotspot_socket.settimeout(0.3)
 
 downlink_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 downlink_socket.bind(down_address)
-hotspot_socket.setblocking(False)
+hotspot_socket.setblocking(True)
 hotspot_socket.settimeout(0.3)
 
 print("Connected!")
