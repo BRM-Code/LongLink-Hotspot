@@ -1,4 +1,5 @@
 import binascii
+import socket
 import time
 
 import grpc
@@ -7,10 +8,12 @@ from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
 from iroha import Iroha, IrohaGrpc, IrohaCrypto
 
-IROHA_HOST_ADDR = '192.168.0.42'
+IROHA_HOST_ADDR = socket.gethostbyname("bullet.local")
 IROHA_PORT = '50051'
 IROHA_DOMAIN = "test"
 DEBUG = False
+net = IrohaGrpc
+tx_time_data = {}
 
 
 def send_transaction_and_print_status(transaction):
@@ -31,8 +34,9 @@ def send_transaction_and_print_status(transaction):
         if status_name == "STATELESS_VALIDATION_SUCCESS":
             print(f"[{creator_id}] Transaction validated in {round(time.time() - time_start, 2)}")
         if status_name == "COMMITTED":
-            time_end = (time.time() - time_start)
-            print(f"[{creator_id}] Transaction took: {round(time_end, 2)} seconds")
+            now = time.time()
+            tx_time_data[now] = now - time_start
+            print(f"[{creator_id}] Transaction took: {round(tx_time_data[now], 2)} seconds")
             return
 
         if status_name in ('STATEFUL_VALIDATION_FAILED', 'STATELESS_VALIDATION_FAILED', 'REJECTED'):
@@ -104,13 +108,10 @@ def get_device_details(device_id, gateway_id):
 
 
 def iroha_connect():
-    # global net
-    # print(f"[System] Connecting to Iroha...", end="")
-    # try:
-    #
-    # except IrohaGrpc.RpcError:
-    #     print(f"[ERROR] Iroha not found on {IROHA_HOST_ADDR}:{IROHA_PORT}")
+    global net
+    print(f"[System] Connecting to Iroha...", end="")
+    try:
+        net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
+    except IrohaGrpc.RpcError:
+        print(f"[ERROR] Iroha not found on {IROHA_HOST_ADDR}:{IROHA_PORT}")
     print("Connected!")
-
-
-net = IrohaGrpc(f"{IROHA_HOST_ADDR}:{IROHA_PORT}")
