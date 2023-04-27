@@ -1,10 +1,7 @@
 import binascii
 import socket
 import time
-
 import grpc
-
-from utilities.errorCodes2Hr import get_proper_functions_for_commands
 import os
 from iroha import Iroha, IrohaGrpc, IrohaCrypto
 
@@ -14,6 +11,7 @@ IROHA_DOMAIN = "test"
 DEBUG = False
 net = IrohaGrpc
 tx_time_data = {}
+tx_list_length_data = []
 
 
 def send_transaction_and_print_status(transaction):
@@ -21,31 +19,35 @@ def send_transaction_and_print_status(transaction):
     creator_id = transaction.payload.reduced_payload.creator_account_id
     commands = get_commands_from_tx(transaction)
     print(f'[{creator_id}] Transaction "{commands}", hash = {hex_hash}') if DEBUG else None
-    print("Sending tx")
     try:
         net.send_tx(transaction, timeout=10)
     except grpc._channel._InactiveRpcError:
         print("TX Timed out!")
         return
-    time_start = time.time()
-    print("Sent!")
-    for i, status in enumerate(net.tx_status_stream(transaction)):
-        status_name, status_code, error_code = status
-        if status_name == "STATELESS_VALIDATION_SUCCESS":
-            print(f"[{creator_id}] Transaction validated in {round(time.time() - time_start, 2)}")
-        if status_name == "COMMITTED":
-            now = time.time()
-            tx_time_data[now] = now - time_start
-            print(f"[{creator_id}] Transaction took: {round(tx_time_data[now], 2)} seconds")
-            return
+    tx_time_data[hex_hash] = time.time()
 
-        if status_name in ('STATEFUL_VALIDATION_FAILED', 'STATELESS_VALIDATION_FAILED', 'REJECTED'):
-            error_code_hr = get_proper_functions_for_commands(commands)(error_code)
-            raise RuntimeError(f"{status_name} failed on tx: "
-                               f"{transaction} due to reason {error_code}: "
-                               f"{error_code_hr}")
 
-        print(f"    {i}: Status={status_name} SC={status_code} EC={error_code}") if DEBUG else None
+def check_on_transactions(tx_list: list):
+    target_no = len(tx_list)
+    print(f"Checking {target_no} Tx_list")
+    tx_list_length_data.append(target_no)
+    curr_no = 0
+    for tx in tx_list:
+        for status, code1 in enumerate(net.tx_status(tx)):
+            if code1 == "COMMITTED":
+                hex_hash = binascii.hexlify(IrohaCrypto.hash(tx))
+                print(f"Confirmed {hex_hash}")
+                curr_no += 1
+                tx_list.remove(tx)
+                tx_time_data[hex_hash] = time.time() - tx_time_data[hex_hash]
+            else:
+                print(f"status {code1}, {status}")
+
+    if curr_no == target_no:
+        print("All tx in list were confirmed")
+    else:
+        print(f"{curr_no}/{target_no} transactions committed")
+    return tx_list
 
 
 def get_commands_from_tx(transaction):
@@ -93,7 +95,7 @@ def store_telemetry_data(telemetry: dict[str:str], uav_id: str, gateway_id: str)
     tx = iroha_gateway.transaction(commands)
     IrohaCrypto.sign_transaction(tx, priv)
     send_transaction_and_print_status(tx)
-    return
+    return tx
 
 
 def get_device_details(device_id, gateway_id):

@@ -13,7 +13,7 @@ print("     __                      __    _       __         __  __      __     
       "  / /___/ /_/ / / / / /_/ / /___/ / / / / ,< /_____/ __  / /_/ / /_(__  ) /_/ / /_/ / /_  \n"
       " /_____/\____/_/ /_/\__, /_____/_/_/ /_/_/|_|     /_/ /_/\____/\__/____/ .___/\____/\__/  \n"
       "                   /____/                                             /_/             ")
-from IrohaSetup import store_telemetry_data, iroha_connect, tx_time_data
+from IrohaSetup import store_telemetry_data, iroha_connect, tx_time_data, check_on_transactions
 
 DEBUG = False
 TESTING = False
@@ -48,6 +48,7 @@ TX_ACK = 0x05
 
 ACK_RATIO = 8
 GATEWAY_ID = "g1"
+tx_list = []
 
 
 def listen_for_data(listen_socket):
@@ -83,6 +84,7 @@ def data_packet(rec_packet):
     global packet_timer
     global ACK_RATIO
     global packet_loss_counter
+    global tx_list
     print("[PK] Received a packet -> ", end="") if DEBUG else None
     packet = json.loads(rec_packet[12:].decode('utf-8'))
     if 'stat' in packet:
@@ -120,6 +122,7 @@ def data_packet(rec_packet):
                             print(f"Updating ACK_RATIO from {ACK_RATIO} to {data_list[2]}")
                             ACK_RATIO = int(data_list[2])
                         ack_wait.remove(uav_id)
+                        tx_list = check_on_transactions(tx_list)
                         return
                 except IndexError:
                     print(f"[PK] Expecting ACK from {uav_id}, Got normal packet instead")
@@ -157,7 +160,9 @@ def data_packet(rec_packet):
         print(f"Data extracted: {data_list}") if DEBUG else None
         try:
             uav_id, tele = process_telemetry(uav_id, data_list)
-            store_telemetry_data(tele, uav_id, GATEWAY_ID) if IROHA_ACTIVATED else None
+            if IROHA_ACTIVATED:
+                tx = store_telemetry_data(tele, uav_id, GATEWAY_ID)
+                tx_list.append(tx)
             if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == ACK_RATIO:
                 uav_pk_count[uav_id] = 0
                 ack_wait.append(uav_id)
@@ -176,6 +181,7 @@ def packet_forwarder_ack(token, identifier, address):
 def send_downlink_packet(txpk):
     global new_downlink_address
     global ack_timer
+    global tx_list
     json_data = json.dumps({"txpk": txpk})
 
     token = b"\x12\x34"
@@ -359,19 +365,19 @@ while True:
         print(f"[System] Packets Lost = {packet_loss_counter}")
 
         exit_time = f"{time.localtime().tm_hour}-{time.localtime().tm_min}"
-        with open(f'{exit_time}-Packet-times.csv', 'w', newline='') as csvfile:
+        with open(f'logs/{exit_time}-Packet-times.csv', 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=packet_time_data.keys())
             writer.writeheader()
             writer.writerow(packet_time_data)
         print(f"File {exit_time}-Packet-times.csv Saved!")
 
-        with open(f'{exit_time}-ACK-times.csv', 'w', newline='') as csvfile:
+        with open(f'logs/{exit_time}-ACK-times.csv', 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=ack_time_data.keys())
             writer.writeheader()
             writer.writerow(ack_time_data)
         print(f"File {exit_time}-ACK-times.csv Saved!")
 
-        with open(f'{exit_time}-TX-times.csv', 'w', newline='') as csvfile:
+        with open(f'logs/{exit_time}-TX-times.csv', 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=tx_time_data.keys())
             writer.writeheader()
             writer.writerow(tx_time_data)
