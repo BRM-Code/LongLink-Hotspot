@@ -13,7 +13,7 @@ print("     __                      __    _       __         __  __      __     
       "  / /___/ /_/ / / / / /_/ / /___/ / / / / ,< /_____/ __  / /_/ / /_(__  ) /_/ / /_/ / /_  \n"
       " /_____/\____/_/ /_/\__, /_____/_/_/ /_/_/|_|     /_/ /_/\____/\__/____/ .___/\____/\__/  \n"
       "                   /____/                                             /_/             ")
-from IrohaSetup import store_telemetry_data, iroha_connect, tx_time_data, check_on_transactions
+from IrohaSetup import store_telemetry_data, iroha_connect, tx_time_data
 
 DEBUG = False
 TESTING = False
@@ -22,10 +22,13 @@ ACKNOWLEDGING_PACKETS = False
 received_ok = False
 IROHA_ACTIVATED = True
 last_token = []
-ack_wait = []  # UAVs awaiting ACK
+uav_ack_wait = []
 
+# The address of the packet forwarder
+# Check these match those in global.config
 server_address = ('localhost', 1730)
 down_address = ('localhost', 1735)
+
 new_downlink_address = ('', 0)
 ack_timer = 0
 packet_timer = 0
@@ -110,7 +113,7 @@ def data_packet(rec_packet):
                 return
 
             #  Check if the packet is an ACK packet
-            if ACKNOWLEDGING_PACKETS or uav_id in ack_wait:
+            if ACKNOWLEDGING_PACKETS or uav_id in uav_ack_wait:
                 data_list = raw_packet.split(' ')
                 try:
                     if int(data_list[1]) == 7:
@@ -121,12 +124,12 @@ def data_packet(rec_packet):
                         if data_list[2] == ACK_RATIO:
                             print(f"Updating ACK_RATIO from {ACK_RATIO} to {data_list[2]}")
                             ACK_RATIO = int(data_list[2])
-                        ack_wait.remove(uav_id)
-                        tx_list = check_on_transactions(tx_list)
+                        uav_ack_wait.remove(uav_id)
+                        # tx_list = check_on_transactions(tx_list)
                         return
                 except IndexError:
                     print(f"[PK] Expecting ACK from {uav_id}, Got normal packet instead")
-                    ack_wait.remove(uav_id)
+                    uav_ack_wait.remove(uav_id)
                     uav_pk_count[uav_id] = 0
                     packet_loss_counter += 1
 
@@ -165,7 +168,7 @@ def data_packet(rec_packet):
                 tx_list.append(tx)
             if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == ACK_RATIO:
                 uav_pk_count[uav_id] = 0
-                ack_wait.append(uav_id)
+                uav_ack_wait.append(uav_id)
                 send_downlink_packet(uplink_ack(uav_id, packet['rxpk'][0]))
         except RuntimeWarning:
             print(f"[PK] Data failed to be processed, Data = {data_decoded}")
@@ -338,6 +341,7 @@ def startup_messages():
     print(f"[System] Iroha State: {IROHA_ACTIVATED}")
 
 
+# Initialises the sockets for communication with the packet forwarder
 def packet_forwarder_setup():
     print("[System] Connecting to the packet forwarder...", end="")
     up_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

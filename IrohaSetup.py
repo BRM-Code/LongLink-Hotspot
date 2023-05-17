@@ -3,30 +3,67 @@ import socket
 import time
 import grpc
 import os
+import asyncio
 from iroha import Iroha, IrohaGrpc, IrohaCrypto
 
 IROHA_HOST_ADDR = socket.gethostbyname("bullet.local")
 IROHA_PORT = '50051'
 IROHA_DOMAIN = "test"
 DEBUG = False
+
 net = IrohaGrpc
 tx_time_data = {}
 tx_list_length_data = []
 
 
-def send_transaction_and_print_status(transaction):
-    hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
-    creator_id = transaction.payload.reduced_payload.creator_account_id
-    commands = get_commands_from_tx(transaction)
-    print(f'[{creator_id}] Transaction "{commands}", hash = {hex_hash}') if DEBUG else None
+async def enqueue_items(queue, generator):
     try:
-        net.send_tx(transaction, timeout=10)
-    except grpc._channel._InactiveRpcError:
-        print("TX Timed out!")
+        async for item in generator:
+            await queue.put(item)
+    except StopAsyncIteration:
+        pass
+    finally:
+        await queue.put(None)  # Signal the end of the items
+
+
+async def iterate_async(generator):
+    for item in generator:
+        yield item
+
+async def get_status_stream(transaction):
+    time_start = time.time()
+    queue = asyncio.Queue()
+
+    # Start enqueueing items onto the queue
+    enqueue_task = asyncio.create_task(enqueue_items(queue, iterate_async(net.tx_status_stream(transaction))))
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break  # End of items
+        status_name, status_code, error_code = item
+        if status_name == "STATELESS_VALIDATION_SUCCESS":
+            print(f"Transaction validated at {time.time() - time_start}")
+        if status_name == "COMMITTED":
+            time_end = round((time.time() - time_start) * 1000) / 1000
+            print(f"Transaction took: {time_end} seconds")
+            enqueue_task.cancel()  # Cancel the enqueue task
+            return
+
+
+def send_transaction_and_print_status(transaction):
+    # hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
+    # creator_id = transaction.payload.reduced_payload.creator_account_id
+    try:
+        net.send_tx(transaction)
+    except IrohaGrpc.RpcError:
+        print("[ERROR] Cannot connect to server")
         return
-    tx_time_data[hex_hash] = time.time()
+    asyncio.run(get_status_stream(transaction))
 
 
+# Called periodically to check if the transactions in th list have been committed
+# Removes committed transactions and returns the list
 def check_on_transactions(tx_list: list):
     target_no = len(tx_list)
     print(f"Checking {target_no} Tx_list")
@@ -48,14 +85,6 @@ def check_on_transactions(tx_list: list):
     else:
         print(f"{curr_no}/{target_no} transactions committed")
     return tx_list
-
-
-def get_commands_from_tx(transaction):
-    commands_from_tx = []
-    for command in transaction.payload.reduced_payload.__getattribute__("commands"):
-        listed_fields = command.ListFields()
-        commands_from_tx.append(listed_fields[0][0].name)
-    return commands_from_tx
 
 
 # This function generates a private/public key pair using the IrohaCrypto module.
@@ -82,6 +111,7 @@ def get_keys(account_id):
     return private_key, public_key
 
 
+# Store telemetry data as account details on the blockchain
 def store_telemetry_data(telemetry: dict[str:str], uav_id: str, gateway_id: str):
     print(f"[{gateway_id}@{IROHA_DOMAIN}] is storing info from {uav_id}")
     telemetry['timestamp'] = time.time()
@@ -98,17 +128,19 @@ def store_telemetry_data(telemetry: dict[str:str], uav_id: str, gateway_id: str)
     return tx
 
 
+# Returns the details of a device on the chain, given the gateway has the permissions to view them
 def get_device_details(device_id, gateway_id):
     print(f"[{device_id}] Looking for details -> ", end="")
     iroha_gateway = Iroha(f"{gateway_id}@{IROHA_DOMAIN}")
     priv, pub = get_keys(gateway_id)
     query = iroha_gateway.query('GetAccountDetail', account_id=f"{device_id}@{IROHA_DOMAIN}")
     IrohaCrypto.sign_query(query, priv)
-    response = net.send_query(query)
+    response = net.send_query(query=query)
     detail = response.account_detail_response.detail
     print(detail) if detail else print("No Details!")
 
 
+# Set up the Iroha net connection
 def iroha_connect():
     global net
     print(f"[System] Connecting to Iroha...", end="")
