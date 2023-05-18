@@ -1,9 +1,9 @@
+import asyncio
 import binascii
+import os
 import socket
 import time
-import grpc
-import os
-import asyncio
+
 from iroha import Iroha, IrohaGrpc, IrohaCrypto
 
 IROHA_HOST_ADDR = socket.gethostbyname("bullet.local")
@@ -16,6 +16,8 @@ tx_time_data = {}
 tx_list_length_data = []
 
 
+# These three functions below are used to measure the time taken for a transaction to be committed
+# They are definitely not the best solution, but are more accurate than previous attempts
 async def enqueue_items(queue, generator):
     try:
         async for item in generator:
@@ -29,6 +31,7 @@ async def enqueue_items(queue, generator):
 async def iterate_async(generator):
     for item in generator:
         yield item
+
 
 async def get_status_stream(transaction):
     time_start = time.time()
@@ -46,45 +49,20 @@ async def get_status_stream(transaction):
             print(f"Transaction validated at {time.time() - time_start}")
         if status_name == "COMMITTED":
             time_end = round((time.time() - time_start) * 1000) / 1000
-            print(f"Transaction took: {time_end} seconds")
+            hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
+            print(f"[{hex_hash}] Transaction took: {time_end} seconds")
+            tx_time_data[hex_hash] = time.time() - tx_time_data[hex_hash]
             enqueue_task.cancel()  # Cancel the enqueue task
             return
 
 
 def send_transaction_and_print_status(transaction):
-    # hex_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
-    # creator_id = transaction.payload.reduced_payload.creator_account_id
     try:
         net.send_tx(transaction)
     except IrohaGrpc.RpcError:
         print("[ERROR] Cannot connect to server")
         return
     asyncio.run(get_status_stream(transaction))
-
-
-# Called periodically to check if the transactions in th list have been committed
-# Removes committed transactions and returns the list
-def check_on_transactions(tx_list: list):
-    target_no = len(tx_list)
-    print(f"Checking {target_no} Tx_list")
-    tx_list_length_data.append(target_no)
-    curr_no = 0
-    for tx in tx_list:
-        for status, code1 in enumerate(net.tx_status(tx)):
-            if code1 == "COMMITTED":
-                hex_hash = binascii.hexlify(IrohaCrypto.hash(tx))
-                print(f"Confirmed {hex_hash}")
-                curr_no += 1
-                tx_list.remove(tx)
-                tx_time_data[hex_hash] = time.time() - tx_time_data[hex_hash]
-            else:
-                print(f"status {code1}, {status}")
-
-    if curr_no == target_no:
-        print("All tx in list were confirmed")
-    else:
-        print(f"{curr_no}/{target_no} transactions committed")
-    return tx_list
 
 
 # This function generates a private/public key pair using the IrohaCrypto module.

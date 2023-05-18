@@ -16,9 +16,7 @@ print("     __                      __    _       __         __  __      __     
 from IrohaSetup import store_telemetry_data, iroha_connect, tx_time_data
 
 DEBUG = False
-TESTING = False
 ENCRYPTED_PACKETS = True
-ACKNOWLEDGING_PACKETS = False
 received_ok = False
 IROHA_ACTIVATED = True
 last_token = []
@@ -29,12 +27,18 @@ uav_ack_wait = []
 server_address = ('localhost', 1730)
 down_address = ('localhost', 1735)
 
+# I had problems with sending down-links, server changes port so has to be updated once.
 new_downlink_address = ('', 0)
+
 ack_timer = 0
 packet_timer = 0
+
+# Must match the key in the AirUnit.ino file
+# The IV is sent with the packet, maybe should be future work to take it from there.
 known_uav_keys = {'u1': (
     bytes([0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C]),
     bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))}
+
 uav_pk_count = {'u1': 0}
 packet_time_data = {}
 ack_time_data = {}
@@ -51,7 +55,6 @@ TX_ACK = 0x05
 
 ACK_RATIO = 8
 GATEWAY_ID = "g1"
-tx_list = []
 
 
 def listen_for_data(listen_socket):
@@ -74,8 +77,6 @@ def sort_packet(packet, address):
         if not received_ok:
             print(f"[System] OK to send packets")
             received_ok = True
-            if TESTING:
-                test_tx_params()
         return
 
     elif packet[3] == TX_ACK:
@@ -87,7 +88,6 @@ def data_packet(rec_packet):
     global packet_timer
     global ACK_RATIO
     global packet_loss_counter
-    global tx_list
     print("[PK] Received a packet -> ", end="") if DEBUG else None
     packet = json.loads(rec_packet[12:].decode('utf-8'))
     if 'stat' in packet:
@@ -101,7 +101,7 @@ def data_packet(rec_packet):
             try:
                 raw_packet = base1.decode('utf-8')
             except UnicodeDecodeError:
-                print("[PK] unable to decode UAV_ID, packet likely not for me!")
+                print("[PK] unable to decode Packet, packet likely not for me!")
                 return
 
             # Extract UAV ID
@@ -113,7 +113,7 @@ def data_packet(rec_packet):
                 return
 
             #  Check if the packet is an ACK packet
-            if ACKNOWLEDGING_PACKETS or uav_id in uav_ack_wait:
+            if uav_id in uav_ack_wait:
                 data_list = raw_packet.split(' ')
                 try:
                     if int(data_list[1]) == 7:
@@ -125,7 +125,6 @@ def data_packet(rec_packet):
                             print(f"Updating ACK_RATIO from {ACK_RATIO} to {data_list[2]}")
                             ACK_RATIO = int(data_list[2])
                         uav_ack_wait.remove(uav_id)
-                        # tx_list = check_on_transactions(tx_list)
                         return
                 except IndexError:
                     print(f"[PK] Expecting ACK from {uav_id}, Got normal packet instead")
@@ -154,7 +153,7 @@ def data_packet(rec_packet):
                 print(f"[PK][{uav_id}] ERROR: data couldn't be decrypted, likely not for me or key/iv incorrect")
                 return
         else:
-            # Only need to base54 decode once
+            # Only need to base64 decode once
             data_decoded = base64.b64decode(packet['rxpk'][0]['data'])
             uav_id = data_decoded[1:3].decode('utf-8')
             data_decoded = data_decoded.decode('utf-8').replace(uav_id, '').encode('utf-8')
@@ -164,9 +163,8 @@ def data_packet(rec_packet):
         try:
             uav_id, tele = process_telemetry(uav_id, data_list)
             if IROHA_ACTIVATED:
-                tx = store_telemetry_data(tele, uav_id, GATEWAY_ID)
-                tx_list.append(tx)
-            if ACKNOWLEDGING_PACKETS or uav_pk_count[uav_id] == ACK_RATIO:
+                store_telemetry_data(tele, uav_id, GATEWAY_ID)
+            if uav_pk_count[uav_id] == ACK_RATIO:
                 uav_pk_count[uav_id] = 0
                 uav_ack_wait.append(uav_id)
                 send_downlink_packet(uplink_ack(uav_id, packet['rxpk'][0]))
@@ -184,7 +182,6 @@ def packet_forwarder_ack(token, identifier, address):
 def send_downlink_packet(txpk):
     global new_downlink_address
     global ack_timer
-    global tx_list
     json_data = json.dumps({"txpk": txpk})
 
     token = b"\x12\x34"
@@ -195,7 +192,7 @@ def send_downlink_packet(txpk):
     last_token.append(token)
 
     # Send the packet to the packet forwarder
-    print("[System] Sending Downlink") if DEBUG or TESTING else None
+    print("[System] Sending Downlink") if DEBUG else None
 
     if new_downlink_address[1] == 0:
         rec_packet, address = listen_for_data(downlink_socket)
@@ -235,42 +232,6 @@ def uplink_ack(uav_id, packet):
     return txpk
 
 
-def test_tx_params():
-    global TESTING
-    print("[TESTING] Trying all combinations")
-    datr_options = ['SF7BW125', 'SF8BW125', 'SF9BW125', 'SF10BW125', 'SF11BW125', 'SF12BW125', 'SF7BW250', 'SF8BW250',
-                    'SF12BW250']
-    codr_options = ['4/5', '4/6', '4/7', '4/8']
-    freq_options = [868.5, 867.1, 867.3, 867.5]
-    txpk = {
-        'imme': True,  # Send packet immediately
-        'rfch': 0,  # downlink_packet['rfch'],  # Concentrator "RF chain" used for TX
-        'modu': 'LORA',  # Modulation identifier
-        "ipol": False,  # Lora modulation polarization inversion
-        'powe': 20
-    }
-    for freq in freq_options:
-        print(f"Testing {freq}")
-        for datr in datr_options:
-            print(f"    Testing {datr}")
-            for codr in codr_options:
-                print(f"        Testing {codr}")
-                txpk['datr'] = datr
-                txpk['codr'] = codr
-                txpk['freq'] = freq
-
-                ack = f"{txpk['datr']} {txpk['codr']} {txpk['freq']} "  # f"{uav_id}{gateway_id}{status}"
-                ack_encoded = base64.b64encode(ack.encode('utf-8')).decode('utf-8')
-
-                txpk['data'] = ack_encoded
-                txpk['size'] = len(ack_encoded.encode('utf-8'))
-                send_downlink_packet(txpk)
-                time.sleep(1)
-
-    print("[TESTING] Testing complete")
-    TESTING = False
-
-
 def process_telemetry(uav_id, data_list):
     global packet_loss_counter
     print(f"Data Decoded = {data_list}") if DEBUG else None
@@ -304,6 +265,7 @@ def process_telemetry(uav_id, data_list):
     return uav_id, telemetry
 
 
+# This was planned as an optimisation, but never got to pulling data from a real UAV
 def remove_duplicates(new_telemetry):
     global last_telemetry
     new_bytes = base64.b64decode(new_telemetry)
@@ -336,7 +298,6 @@ def startup_messages():
     else:
         print(f"[System] Debug: OFF")
     print(f"[System] Encrypted packets = {ENCRYPTED_PACKETS}")
-    print(f"[System] Acknowledging Packet mode {ACKNOWLEDGING_PACKETS}")
     print(f"[System] Gateway ID: {GATEWAY_ID}")
     print(f"[System] Iroha State: {IROHA_ACTIVATED}")
 
@@ -357,6 +318,30 @@ def packet_forwarder_setup():
     return up_socket, down_socket
 
 
+def save_test_data():
+    print("[System] Saving performance numbers:\n")
+    print(f"[System] Packets Lost = {packet_loss_counter}")
+
+    exit_time = f"{time.localtime().tm_hour}-{time.localtime().tm_min}"
+    with open(f'logs/{exit_time}-Packet-times.csv', 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=packet_time_data.keys())
+        writer.writeheader()
+        writer.writerow(packet_time_data)
+    print(f"File {exit_time}-Packet-times.csv Saved!")
+
+    with open(f'logs/{exit_time}-ACK-times.csv', 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=ack_time_data.keys())
+        writer.writeheader()
+        writer.writerow(ack_time_data)
+    print(f"File {exit_time}-ACK-times.csv Saved!")
+
+    with open(f'logs/{exit_time}-TX-times.csv', 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=tx_time_data.keys())
+        writer.writeheader()
+        writer.writerow(tx_time_data)
+    print(f"File {exit_time}-TX-times.csv Saved!")
+
+
 iroha_connect() if IROHA_ACTIVATED else None
 startup_messages()
 uplink_socket, downlink_socket = packet_forwarder_setup()
@@ -365,26 +350,5 @@ while True:
         data, addr = listen_for_data(uplink_socket)
         sort_packet(data, addr)
     except KeyboardInterrupt:
-        print("[System] Saving performance numbers:\n")
-        print(f"[System] Packets Lost = {packet_loss_counter}")
-
-        exit_time = f"{time.localtime().tm_hour}-{time.localtime().tm_min}"
-        with open(f'logs/{exit_time}-Packet-times.csv', 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=packet_time_data.keys())
-            writer.writeheader()
-            writer.writerow(packet_time_data)
-        print(f"File {exit_time}-Packet-times.csv Saved!")
-
-        with open(f'logs/{exit_time}-ACK-times.csv', 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=ack_time_data.keys())
-            writer.writeheader()
-            writer.writerow(ack_time_data)
-        print(f"File {exit_time}-ACK-times.csv Saved!")
-
-        with open(f'logs/{exit_time}-TX-times.csv', 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=tx_time_data.keys())
-            writer.writeheader()
-            writer.writerow(tx_time_data)
-        print(f"File {exit_time}-TX-times.csv Saved!")
-
+        save_test_data()
         exit(1)
