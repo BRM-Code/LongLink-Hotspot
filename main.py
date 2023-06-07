@@ -1,11 +1,16 @@
 import base64
 import json
+import random
 import socket
 import struct
 import sys
 import time
 import csv
 from Crypto.Cipher import AES
+
+import settings
+from settings import ENCRYPTED_PACKETS, IROHA_ACTIVATED, DEBUG, PUSH_ACK_ID, PULL_DATA_ID, PULL_ACK_ID, TX_ACK, \
+    GATEWAY_ID, PROTOCOL_VERSION, ACK_RATIO, PULL_RESP_ID
 
 print("     __                      __    _       __         __  __      __                   __ \n"
       "    / /   ____  ____  ____ _/ /   (_)___  / /__      / / / /___  / /__________  ____  / /_\n"
@@ -15,17 +20,9 @@ print("     __                      __    _       __         __  __      __     
       "                   /____/                                             /_/             ")
 from IrohaSetup import store_telemetry_data, iroha_connect, tx_time_data
 
-DEBUG = False
-ENCRYPTED_PACKETS = True
 received_ok = False
-IROHA_ACTIVATED = True
 last_token = []
 uav_ack_wait = []
-
-# The address of the packet forwarder
-# Check these match those in global.config
-server_address = ('localhost', 1730)
-down_address = ('localhost', 1735)
 
 # I had problems with sending down-links, server changes port so has to be updated once.
 new_downlink_address = ('', 0)
@@ -44,30 +41,19 @@ packet_time_data = {}
 ack_time_data = {}
 last_telemetry = None
 packet_loss_counter = 0
-PREDICTED_PACKET_LENGTH = 400
-
-PROTOCOL_VERSION = 0x02
-PUSH_DATA_ID = 0x00
-PUSH_ACK_ID = 0x01
-PULL_DATA_ID = 0x02
-PULL_ACK_ID = 0x04
-TX_ACK = 0x05
-
-ACK_RATIO = 8
-GATEWAY_ID = "g1"
 
 
 def listen_for_data(listen_socket):
     while True:
         try:
-            return listen_socket.recvfrom(PREDICTED_PACKET_LENGTH)
+            return listen_socket.recvfrom(settings.PREDICTED_PACKET_LENGTH)
         except socket.error or socket.timeout:
             pass
 
 
 def sort_packet(packet, address):
     global received_ok
-    if packet[3] == PUSH_DATA_ID:
+    if packet[3] == settings.PUSH_DATA_ID:
         packet_forwarder_ack(packet[1:3], PUSH_ACK_ID, address)
         data_packet(packet)
         return
@@ -86,7 +72,6 @@ def sort_packet(packet, address):
 def data_packet(rec_packet):
     global ack_timer
     global packet_timer
-    global ACK_RATIO
     global packet_loss_counter
     print("[PK] Received a packet -> ", end="") if DEBUG else None
     packet = json.loads(rec_packet[12:].decode('utf-8'))
@@ -123,7 +108,7 @@ def data_packet(rec_packet):
                         print(f"Last ACK RSSI = {data_list[3]}")
                         if data_list[2] == ACK_RATIO:
                             print(f"Updating ACK_RATIO from {ACK_RATIO} to {data_list[2]}")
-                            ACK_RATIO = int(data_list[2])
+                            settings.ACK_RATIO = int(data_list[2])
                         uav_ack_wait.remove(uav_id)
                         return
                 except IndexError:
@@ -182,31 +167,37 @@ def packet_forwarder_ack(token, identifier, address):
 def send_downlink_packet(txpk):
     global new_downlink_address
     global ack_timer
-    json_data = json.dumps({"txpk": txpk})
 
-    token = b"\x12\x34"
-    packet_identifier = 0x03
-    packet_data = json_data.encode()
-    packet_size = len(packet_data)
-    packet = struct.pack("!B 2s B {0}s".format(packet_size), PROTOCOL_VERSION, token, packet_identifier, packet_data)
+    # Generate two random numbers between 0 and 255 for use as a token
+    random_numbers = [random.randint(0, 255) for _ in range(2)]
+    token = bytes(random_numbers)
+    # Log the token for checking if the acknowledgement is received
     last_token.append(token)
+
+    # Create the packet
+    packet_data = json.dumps({"txpk": txpk}).encode()
+    packet_size = len(packet_data)
+    packet = struct.pack("!B 2s B {0}s".format(packet_size), PROTOCOL_VERSION, token, PULL_RESP_ID,
+                         packet_data)
 
     # Send the packet to the packet forwarder
     print("[System] Sending Downlink") if DEBUG else None
 
+    # If the address hasn't been set, listen for a packet from the packet forwarder and copy the address
+    # WARNING: may miss an important packet as it is consumed here, but this only happens once per run
     if new_downlink_address[1] == 0:
-        rec_packet, address = listen_for_data(downlink_socket)
-        new_downlink_address = address
-    else:
-        address = new_downlink_address
+        new_downlink_address = listen_for_data(downlink_socket)[1]
 
     ack_tx_pck = time.time()
-    downlink_socket.sendto(packet, address)
+    downlink_socket.sendto(packet, new_downlink_address)
     while True:
-        rec_packet, address = listen_for_data(downlink_socket)
-        if rec_packet[3] == 0x05:
-            print(f"Received TX_PCK ACK {rec_packet[12:].decode('utf-8')}"
-                  f"took {round((time.time() - ack_tx_pck), 2)} seconds")
+        rec_packet, new_downlink_address = listen_for_data(downlink_socket)
+        if rec_packet[3] == TX_ACK and rec_packet[1:3] == token:
+            if len(rec_packet) < 12:
+                print(f"[<-] Received TX_PCK ACK", end="")
+            else:
+                print(f"[ERROR] Received TX_PCK ACK {rec_packet[12:].decode('utf-8')}", end="")
+            print(f"took {round((time.time() - ack_tx_pck), 2)} seconds")
             ack_timer = time.time()
             break
 
@@ -291,10 +282,9 @@ def remove_duplicates(new_telemetry):
 
 
 def startup_messages():
-    global DEBUG
     if len(sys.argv) > 1 and bool(sys.argv[1]):
         print(f"[System] Debug: ON")
-        DEBUG = True
+        settings.DEBUG = True
     else:
         print(f"[System] Debug: OFF")
     print(f"[System] Encrypted packets = {ENCRYPTED_PACKETS}")
@@ -306,12 +296,12 @@ def startup_messages():
 def packet_forwarder_setup():
     print("[System] Connecting to the packet forwarder...", end="")
     up_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    up_socket.bind(server_address)
+    up_socket.bind(settings.server_address)
     up_socket.setblocking(True)
     up_socket.settimeout(0.3)
 
     down_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    down_socket.bind(down_address)
+    down_socket.bind(settings.down_address)
     down_socket.setblocking(True)
     down_socket.settimeout(0.3)
     print("Connected!")
